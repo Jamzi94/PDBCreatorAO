@@ -12,7 +12,7 @@ from structure_analysis import (detect_gaps_and_discard_coils,
                                 parse_small_molecules,
                                 parse_helix_sheet_annotations)
 from alignment import align_and_patch
-from align_and_patch import align_structures_by_groups
+from oriented import align_structures_by_groups
 
 
 # --------------------------------------------------------------------------- #
