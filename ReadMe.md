@@ -2,7 +2,7 @@
 # Protein Structure Analysis Pipeline (PDBCreatorAO)
 
 **Description:**  
-PDBCreatorAO is an advanced pipeline for protein structure analysis, alignment, patching, and orientation. For any set of UniProt IDs, it automates retrieval of protein metadata (gene names, descriptions, interaction partners), downloads experimental structures from PDB/OPM and AlphaFold predictions, analyzes secondary structures, detects gaps/coils, aligns and patches models, orients structures using DUM references (`oriented.py`), and compiles detailed Excel reports with hyperlinks and quality metrics.
+PDBCreatorAO is an advanced pipeline for protein structure analysis, alignment, patching, and orientation. For any set of UniProt IDs, it automates retrieval of protein metadata (gene names, descriptions, interaction partners), downloads experimental structures from PDB/OPM and AlphaFold predictions, analyzes secondary structures, detects gaps/coils, aligns and patches models, orients structures using DUM references and compiles detailed Excel reports with hyperlinks and quality metrics.
 
 ---
 
@@ -127,7 +127,7 @@ All sheets have clickable hyperlinks (UniProt, RCSB, AlphaFold, PubMed…).
 # Version Française
 
 **Description**  
-PDBCreatorAO est un pipeline avancé pour l’analyse structurale, l’alignement, le raccommodage et l’orientation des protéines. À partir d’IDs UniProt, il automatise la récupération des métadonnées protéiques (noms de gènes, descriptions, partenaires d’interaction), le téléchargement des structures expérimentales (PDB/OPM) et des prédictions AlphaFold, l’analyse des structures secondaires, la détection des lacunes et régions de faible confiance, l’alignement et le raccommodage, l’orientation via références DUM (`oriented.py`), et la génération de rapports Excel multi-feuilles détaillés.
+PDBCreatorAO est un pipeline avancé pour l’analyse structurale, l’alignement, le raccommodage et l’orientation des protéines. À partir d’IDs UniProt, il automatise la récupération des métadonnées protéiques (noms de gènes, descriptions, partenaires d’interaction), le téléchargement des structures expérimentales (PDB/OPM) et des prédictions AlphaFold, l’analyse des structures secondaires, la détection des lacunes et régions de faible confiance, l’alignement et le raccommodage, l’orientation via références DUM et la génération de rapports Excel multi-feuilles détaillés.
 
 ---
 
