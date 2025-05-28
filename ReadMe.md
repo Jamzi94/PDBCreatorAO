@@ -60,9 +60,10 @@ PDBCreatorAO is an advanced pipeline for protein structure analysis, alignment, 
     - Detects and resolves chain correspondence, selecting optimal mapping (lowest RMSD, valid alignment).
 
 5. **Structure Orientation (`oriented.py`):**
-    - Detects DUM-containing reference structures for each gene or complex.
-    - Uses these references to orient all experimental and predicted structures consistently.
-    - Ensures all structures of a gene/complex are aligned in a unified orientation for downstream analyses.
+   - Among all available structures for a gene or complex, the pipeline automatically identifies those containing DUM (by analyzing small molecule/ligand annotations).
+   - For each group (gene or complex), the first DUM-containing structure is selected as the orientation reference.
+   - All other experimental or predicted structures in the group are superimposed onto this reference by precise structural alignment (usually on Cα atoms), ensuring a common spatial frame.
+   - The pipeline records RMSD values (before/after alignment) and logs all steps for reproducibility.
 
 6. **Results Compilation (`pipeline.py`):**
     - Generates a comprehensive Excel report with multiple sheets, including clickable hyperlinks to all relevant database entries.
@@ -182,9 +183,10 @@ PDBCreatorAO est un pipeline avancé pour l’analyse structurale, l’alignemen
    - Sélectionne automatiquement la correspondance de chaînes la plus optimale (RMSD minimal).
 
 5. **Orientation des structures (`oriented.py`)** :
-   - Identifie automatiquement les structures de référence contenant DUM pour chaque gène ou complexe.
-   - Utilise ces références pour orienter de manière cohérente toutes les structures expérimentales et prédites.
-   - Garantit l’uniformité d’orientation pour les analyses comparatives, la modélisation de membrane, etc.
+   - Parmi toutes les structures disponibles pour un gène ou complexe, le pipeline identifie automatiquement celles contenant DUM (en analysant les petites molécules/ligands de chaque structure).
+   - Pour chaque groupe (gène ou complexe), la première structure contenant DUM sert de référence d’orientation.
+   - Toutes les autres structures expérimentales ou prédictives du groupe sont superposées sur cette référence par alignement structurale précis (généralement sur les atomes Cα), garantissant un repère spatial commun.
+   - Le pipeline enregistre les valeurs de RMSD (avant/après alignement) et trace toutes les étapes pour assurer la reproductibilité.
 
 6. **Compilation des résultats (`pipeline.py`)** :
    - Génère un rapport Excel multi-feuilles avec liens cliquables.
@@ -199,7 +201,7 @@ Préparer un fichier Excel d’entrée (ex : `uniprot_template.xlsx`) avec les 
 Exécuter :
 
 ```bash
-python pipeline.py --input uniprot_template.xlsx --output uniprot_results.xlsx
+python pipeline.py 
 ```
 
 Ou pour des IDs directs :
