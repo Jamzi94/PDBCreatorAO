@@ -1,0 +1,8 @@
+requests
+pandas
+openpyxl
+numpy
+biopython
+MDAnalysis
+tmscoring
+iminuit
