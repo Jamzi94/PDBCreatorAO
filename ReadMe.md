@@ -77,7 +77,7 @@ Prepare an input Excel (e.g. `uniprot_template.xlsx`) with UniProt IDs in the fi
 Run the pipeline:
 
 ```bash
-python pipeline.py --input uniprot_template.xlsx --output uniprot_results.xlsx
+python pipeline.py 
 ```
 
 Or with direct UniProt IDs:
