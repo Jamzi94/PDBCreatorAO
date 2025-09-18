@@ -5,11 +5,25 @@ import logging
 log = logging.getLogger(__name__)
 
 def download_pdb_structure(pdb_id: str, output_dir: str, filename: str = None) -> str:
-    """
-    Download the PDB file for pdb_id into output_dir, first trying OPM,
-    then falling back to the RCSB files server. If filename is given,
-    use it; otherwise use '{pdb_id}.pdb'. Returns the path to the
-    downloaded file, or empty string on failure.
+    """Downloads a PDB structure from OPM or RCSB.
+
+    This function attempts to download a PDB file from two sources. It first
+    tries the OPM (Orientations of Proteins in Membranes) database, which is
+    specialized for membrane proteins. If the OPM download fails (e.g., the
+    protein is not in OPM or the server is down), it falls back to the main
+    RCSB PDB data server.
+
+    The downloaded file is saved in the specified output directory.
+
+    Args:
+        pdb_id: The 4-character PDB accession ID (e.g., "1A2B").
+        output_dir: The directory where the PDB file will be saved.
+        filename: An optional name for the output file. If not provided,
+            it defaults to "{pdb_id}.pdb".
+
+    Returns:
+        The full path to the downloaded PDB file if successful, otherwise an
+        empty string.
     """
     pdb_id = pdb_id.lower()
     os.makedirs(output_dir, exist_ok=True)
