@@ -29,10 +29,23 @@ log = logging.getLogger(__name__)
 RCSB_CORE = "https://data.rcsb.org/rest/v1/core"
 
 def get_pdb_details(pdb_id: str) -> dict:
-    """
-    Retrieve experimental details for pdb_id from RCSB. Returns a dict:
-    method, resolution, methodology, conformation, environment,
-    count, descs, chains, orgs, pubmed_id.
+    """Retrieves detailed metadata for a given PDB ID from the RCSB API.
+
+    This function queries multiple RCSB API endpoints to aggregate comprehensive
+    information about a protein structure. This includes experimental method,
+    resolution, conformational state, and details about each polymer entity
+    (chain descriptions, source organism).
+
+    Conformational state and experimental environment are inferred by scanning
+    the structure's title and keywords for specific terms.
+
+    Args:
+        pdb_id: The 4-character PDB accession ID.
+
+    Returns:
+        A dictionary containing the aggregated details. If the PDB ID is not
+        found or an API error occurs, it returns a dictionary with default
+        "N/A" values.
     """
     pdb_id = pdb_id.lower()
     try:
