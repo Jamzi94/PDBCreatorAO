@@ -1,3 +1,23 @@
+"""
+alignment.py
+
+Structural alignment and gap patching for protein structures.
+
+This module provides comprehensive functionality for aligning predicted protein
+structures (e.g., from AlphaFold) onto experimental structures and patching
+missing regions (gaps). It handles:
+
+- Multi-chain complexes (both homomeric and heteromeric)
+- Optimal chain-to-chain correspondence using sequence and structural alignment
+- Gap detection and filling using predicted structure coordinates
+- Fusion protein detection and handling
+- RMSD calculation before and after alignment
+- Temporary file management with automatic cleanup
+
+The alignment process uses both BioPython for sequence alignment and MDAnalysis
+for structural superposition to find the best chain correspondence.
+"""
+
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
@@ -26,6 +46,7 @@ from structure_analysis import group_segments
 
 
 # Suppress specific warnings commonly encountered with MDAnalysis
+# These warnings are expected and don't indicate problems with the analysis
 warnings.filterwarnings("ignore", category=UserWarning, module="MDAnalysis")
 warnings.filterwarnings("ignore", message="Reader has no dt information")
 warnings.filterwarnings("ignore", message="Unit cell dimensions not found*")
@@ -37,7 +58,8 @@ logging.getLogger("MDAnalysis").setLevel(logging.ERROR)
 
 log = logging.getLogger(__name__)
 
-# Constants for DUM detection
+# Regular expression pattern for detecting DUM (dummy atom) ligands
+# DUM atoms are used as orientation references in membrane protein structures
 DUM_RE = re.compile(r"\bDUM\b", re.IGNORECASE)
 
 
@@ -79,19 +101,24 @@ def _get_max_resid(src: str, chain_id: str, parser: Optional[PDBParser] = None) 
 # ---------------------------------------------------------------------------
 # Temporary file management
 # ---------------------------------------------------------------------------
+
 def create_persistent_temp_file(suffix=".pdb"):
     """
     Create a persistent temporary file that won't be automatically deleted.
     
+    Creates a temporary file that must be explicitly removed. This is necessary
+    because some operations require the file to persist beyond the scope of
+    the function that creates it.
+    
     Parameters
     ----------
     suffix : str, optional
-        Suffix for the temporary file, default ".pdb"
+        File extension for the temporary file, default ".pdb"
         
     Returns
     -------
     str
-        Path to the temporary file
+        Absolute path to the created temporary file
     """
     fd, tmp_path = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
@@ -100,6 +127,9 @@ def create_persistent_temp_file(suffix=".pdb"):
 def cleanup_temp_files(file_list):
     """
     Clean up a list of temporary files.
+    
+    Safely removes temporary files, logging warnings if deletion fails.
+    This ensures proper cleanup even when the pipeline encounters errors.
     
     Parameters
     ----------
@@ -114,53 +144,69 @@ def cleanup_temp_files(file_list):
                 log.warning(f"Failed to remove temporary file {file_path}: {e}")
 
 # ---------------------------------------------------------------------------
-# Chain‑pairing utilities
+# Chain-pairing utilities
 # ---------------------------------------------------------------------------
 
 def _find_best_chain_pair(pred_dir: str, exp_path: str) -> Dict[str, Tuple[str, Dict]]:
-    """Pair every *predicted chain* with the experimental chain of lowest RMSD.
+    """
+    Pair predicted chains with experimental chains using optimal RMSD alignment.
 
+    Uses both sequence alignment and structural superposition to find the best
+    matching between predicted and experimental chains. This handles complex cases:
+    - Multi-chain structures
+    - Different chain orderings
+    - Partial overlaps
+    
+    The function uses a two-pass approach:
+    1. Sequence alignment to find similar chains
+    2. Structural alignment (RMSD) to confirm and rank matches
+    
+    Parameters
+    ----------
+    pred_dir : str
+        Directory containing predicted PDB files
+    exp_path : str
+        Path to experimental PDB file
+        
     Returns
     -------
     mapping : dict
-        `{"<pred_file>:<pred_chain>": (best_exp_chain, details)} where
-        *details* contains::
-
-            {
-                "rmsd": best_rmsd,
-                "pairs": list_of_all_tested_pairs,
-                "source": absolute_pred_pdb_path,
-                "pred_chain": chain_id_in_pred,
-            }
+        Dictionary mapping "<pred_file>:<pred_chain>" to (best_exp_chain, details)
+        where details contains:
+        - rmsd: Best RMSD value
+        - pairs: List of all tested chain pairs
+        - source: Absolute path to predicted PDB
+        - pred_chain: Chain ID in predicted structure
     """
-    # ------ Using both Biopython's sequence alignment and structural alignment
+    # Use both Biopython's sequence alignment and structural alignment
     parser = PDBParser(QUIET=True)
     pp_builder = PPBuilder()  # For extracting sequences
 
-    # Pre‑extract CA coordinates and sequences for experimental chains (cost amortised)
+    # Pre-extract CA coordinates and sequences for experimental chains
+    # This amortizes the cost across all predicted chains
     exp_struct = parser.get_structure("exp", exp_path)
     exp_chains = {}
     exp_sequences = {}
 
     for ch in exp_struct.get_chains():
-        # Extract CA coordinates
+        # Extract CA coordinates for structural alignment
         exp_chains[ch.id] = {res.id[1]: res["CA"].get_coord() for res in ch if res.id[0] == " " and "CA" in res}
-        # Extract sequence
+        # Extract amino acid sequence for sequence alignment
         seq = "".join(str(pp.get_sequence()) for pp in pp_builder.build_peptides(ch))
         if seq:  # Only store if sequence is not empty
             exp_sequences[ch.id] = seq
 
     results: Dict[str, Tuple[str, Dict]] = {}
-    # Track used experimental chains to potentially handle multimers better
+    # Track used experimental chains to avoid duplicate assignments in multimers
     used_exp_chains = set()
 
     for pred_path in glob.glob(os.path.join(pred_dir, "*.pdb")):
         pred_name = os.path.basename(pred_path)
         pred_struct = parser.get_structure(pred_name, pred_path)
 
-        # Iterate over *all* chains in the predicted structure
+        # Iterate over all chains in the predicted structure
         for p_chain in pred_struct.get_chains():
-            # Extract CA coordinates
+            # Extract CA coordinates for this predicted chain
             p_ca = {res.id[1]: res["CA"].get_coord() for res in p_chain if res.id[0] == " " and "CA" in res}
             
             # Get sequence for this predicted chain
@@ -173,20 +219,20 @@ def _find_best_chain_pair(pred_dir: str, exp_path: str) -> Dict[str, Tuple[str, 
             best_score = float("-inf")
             pairs = []
 
-            # First pass: try sequence alignment to find best matching chain
+            # First pass: use sequence alignment to find the best matching chain
             for exp_id, exp_seq in exp_sequences.items():
                 if exp_id in used_exp_chains:
-                    continue  # Skip already used chains for better multimer handling
+                    continue  # Skip already assigned chains for better multimer handling
                     
                 # Perform sequence alignment
                 alignment = pairwise2.align.globalxx(pred_seq, exp_seq, one_alignment_only=True)
                 score = alignment[0].score if alignment else 0
                 
-                # Store best sequence match
+                # Track best sequence match
                 if score > best_score:
                     best_score = score
                     
-                    # Now calculate RMSD if we have common residues
+                    # Calculate RMSD for chains with common residues
                     if exp_id in exp_chains and p_ca:
                         shared = sorted(p_ca.keys() & exp_chains[exp_id].keys())
                         if shared:
@@ -205,7 +251,7 @@ def _find_best_chain_pair(pred_dir: str, exp_path: str) -> Dict[str, Tuple[str, 
                                 best_rmsd = rmsd_val
                                 best_exp_chain = exp_id
 
-            # Second pass: if sequence alignment didn't yield good results, try structural alignment only
+            # Second pass: if sequence alignment didn't work, try pure structural alignment
             if best_exp_chain is None:
                 for exp_id, exp_ca in exp_chains.items():
                     if exp_id in used_exp_chains:
@@ -230,16 +276,16 @@ def _find_best_chain_pair(pred_dir: str, exp_path: str) -> Dict[str, Tuple[str, 
                         best_exp_chain = exp_id
 
             if best_exp_chain is not None:
-                # Mark this experimental chain as used to prevent duplicates
+                # Mark this experimental chain as assigned to prevent duplicate usage
                 used_exp_chains.add(best_exp_chain)
                 
-                key = f"{pred_name}:{p_chain.id}"  # unique key
+                key = f"{pred_name}:{p_chain.id}"  # Unique identifier for this chain pair
                 results[key] = (
                     best_exp_chain,
                     {
                         "rmsd": best_rmsd,
                         "pairs": pairs,
-                        "source": pred_path,   # absolute path for later use
+                        "source": pred_path,      # Absolute path for later use
                         "pred_chain": p_chain.id,
                     },
                 )
@@ -249,10 +295,27 @@ def _find_best_chain_pair(pred_dir: str, exp_path: str) -> Dict[str, Tuple[str, 
 # ---------------------------------------------------------------------------
 # Strict PDB reorder utility 
 # ---------------------------------------------------------------------------
+
 def reorder_residues_in_pdb(pdb_input: str, pdb_output: str) -> None:
     """
-    Fully reorder a PDB file by chain, residue number, and atom name.
-    Renumber atoms, insert TER between chains, and ensure residue order is correct.
+    Reorder and renumber atoms in a PDB file for consistency.
+    
+    Ensures proper ordering of atoms by:
+    1. Grouping atoms by chain and residue
+    2. Sorting by chain ID, residue number, and insertion code
+    3. Renumbering atoms sequentially
+    4. Inserting TER records between chains
+    5. Adding proper END record
+    
+    This normalization is important for downstream processing and
+    ensures compatibility with various structure analysis tools.
+    
+    Parameters
+    ----------
+    pdb_input : str
+        Path to input PDB file
+    pdb_output : str
+        Path to output reordered PDB file
     """
     from collections import defaultdict
 
@@ -295,24 +358,60 @@ def reorder_residues_in_pdb(pdb_input: str, pdb_output: str) -> None:
     with open(pdb_output, "w") as f:
         f.writelines(new_lines)
 
-
 # ---------------------------------------------------------------------------
 # PDB manipulation helpers
 # ---------------------------------------------------------------------------
 
 class _ChainSelector(Select):
-    """Select only *wanted* chain up to residue *maxr* (inclusive)."""
+    """
+    BioPython selector to extract a specific chain up to a maximum residue number.
+    
+    Used with PDBIO to write only the desired chain and residue range to a file.
+    This is essential for isolating individual chains in multi-chain structures.
+    """
 
     def __init__(self, wanted: str, maxr: int):
+        """
+        Initialize the chain selector.
+        
+        Parameters
+        ----------
+        wanted : str
+            Chain ID to select
+        maxr : int
+            Maximum residue number (inclusive)
+        """
         super().__init__()
         self.wanted = wanted; self.max = maxr
 
-    def accept_residue(self, res):  # noqa: D401
+    def accept_residue(self, res):
+        """Determine if a residue should be included in the output."""
         return res.get_parent().id == self.wanted and res.id[0] == " " and res.id[1] <= self.max
 
 
 def _clean_chain(src: str, chain: str, maxr: int, parser: Optional[PDBParser] = None) -> str:
-    """Write *chain* from *src* into a temporary PDB and return its path."""
+    """
+    Extract a specific chain from a PDB file and write to a temporary file.
+    
+    Isolates a single chain up to the specified maximum residue number,
+    which is useful for processing multi-chain structures one chain at a time.
+    
+    Parameters
+    ----------
+    src : str
+        Path to source PDB file
+    chain : str
+        Chain ID to extract
+    maxr : int
+        Maximum residue number to include
+    parser : PDBParser, optional
+        PDB parser to reuse (default: create new parser)
+        
+    Returns
+    -------
+    str
+        Path to temporary file containing the extracted chain
+    """
     if parser is None:
         parser = PDBParser(QUIET=True)
     
@@ -325,7 +424,23 @@ def _clean_chain(src: str, chain: str, maxr: int, parser: Optional[PDBParser] = 
 
 
 def _pad_pdb(src: str) -> str:
-    """Pad lines to 80 chars, remove ANISOU/TER/END, add TER between chains."""
+    """
+    Normalize PDB line format and add proper chain separators.
+    
+    Ensures all ATOM/HETATM lines are exactly 80 characters and adds TER
+    records between chains. Removes ANISOU, TER, and END records for clean
+    processing. This normalization is required for consistent parsing.
+    
+    Parameters
+    ----------
+    src : str
+        Path to source PDB file
+        
+    Returns
+    -------
+    str
+        Path to temporary file with normalized format
+    """
     # Create a persistent temporary file
     tmp = create_persistent_temp_file(suffix=".pdb")
     prev_chain = None
@@ -346,16 +461,19 @@ def _pad_pdb(src: str) -> str:
 
 def _trim_chain_to_universe(src: str, chain_id: str, parser: Optional[PDBParser] = None) -> Tuple[mda.Universe, List[str]]:
     """
-    Return an *MDAnalysis Universe* containing only `chain_id` and a list of temporary files to clean up.
+    Create an MDAnalysis Universe for a specific chain with cleanup tracking.
+    
+    Extracts a single chain from a PDB file and creates an MDAnalysis Universe
+    object for structural analysis. Tracks temporary files for later cleanup.
     
     Parameters
     ----------
     src : str
         Path to the PDB file
     chain_id : str
-        Chain identifier
+        Chain identifier to extract
     parser : PDBParser, optional
-        PDB parser to reuse, default None (creates a new parser)
+        PDB parser to reuse (default: create new parser)
         
     Returns
     -------
@@ -384,10 +502,38 @@ def _trim_chain_to_universe(src: str, chain_id: str, parser: Optional[PDBParser]
     return u, temp_files
 
 # ---------------------------------------------------------------------------
-# Reliable RMSD calculation (altloc‑aware)
+# Reliable RMSD calculation (altloc-aware)
 # ---------------------------------------------------------------------------
 
 def _safe_rmsd(u1: mda.Universe, u2: mda.Universe, sel: str) -> Tuple[float, int]:
+    """
+    Calculate RMSD between two structures handling alternate locations.
+    
+    Computes root-mean-square deviation of CA atoms between two structures,
+    properly handling alternate location indicators (altloc) in PDB files.
+    Prioritizes atoms with no altloc or altloc 'A'.
+    
+    Parameters
+    ----------
+    u1 : MDAnalysis.Universe
+        First structure (mobile)
+    u2 : MDAnalysis.Universe
+        Second structure (reference)
+    sel : str
+        Atom selection string
+        
+    Returns
+    -------
+    rmsd : float
+        RMSD value in Angstroms
+    n_atoms : int
+        Number of common CA atoms used in calculation
+        
+    Raises
+    ------
+    RuntimeError
+        If no common residues are found
+    """
     def _pick(u):
         ag = u.select_atoms(sel + ' and altloc ""')
         if not ag.n_atoms:
@@ -409,9 +555,19 @@ def _safe_rmsd(u1: mda.Universe, u2: mda.Universe, sel: str) -> Tuple[float, int
 # ---------------------------------------------------------------------------
 
 def _reassign_chain(seg: mda.AtomGroup, chain_id: str) -> None:
-    """Set both chainID (atom) and segid (segment) to *chain_id*.
-
-    Setting just one of the two is unreliable across MDAnalysis versions.
+    """
+    Assign chain ID to all atoms in a segment for proper structure assembly.
+    
+    Sets both the chainID (atom-level) and segid (segment-level) attributes
+    to ensure the chain assignment is recognized across different MDAnalysis
+    versions and PDB writing operations.
+    
+    Parameters
+    ----------
+    seg : MDAnalysis.AtomGroup
+        Atoms to reassign
+    chain_id : str
+        Target chain identifier
     """
     # atoms: chainID attribute exists in topology
     for atom in seg.atoms:
@@ -421,26 +577,29 @@ def _reassign_chain(seg: mda.AtomGroup, chain_id: str) -> None:
         segment.segid = chain_id
 
 
-# ------ Adding new functions for handling fusion proteins and patching missing residues
 # ---------------------------------------------------------------------------
-# Enhanced patching helpers - from Bio.PDB
+# Enhanced patching helpers for fusion proteins
 # ---------------------------------------------------------------------------
 
 def _is_fusion_protein(pred_chain, exp_chain) -> bool:
     """
-    Determine if the experimental chain is a fusion protein (longer than predicted).
+    Detect if the experimental chain is a fusion protein (longer than predicted).
+    
+    Fusion proteins contain additional sequences beyond the target protein,
+    often used for purification or stabilization. This function identifies
+    such cases by comparing maximum residue numbers.
     
     Parameters
     ----------
     pred_chain : Bio.PDB.Chain
-        Predicted chain
+        Predicted chain from AlphaFold
     exp_chain : Bio.PDB.Chain
-        Experimental chain
+        Experimental chain from crystal structure
         
     Returns
     -------
     bool
-        True if the experimental chain is a fusion protein
+        True if experimental chain extends beyond the predicted chain
     """
     if not pred_chain or not exp_chain:
         return False
@@ -456,14 +615,17 @@ def _is_fusion_protein(pred_chain, exp_chain) -> bool:
 
 def _truncate_fusion_protein(exp_chain, max_resid) -> None:
     """
-    Truncate experimental chain to match the length of the predicted chain.
+    Truncate fusion protein experimental chain to match predicted length.
+    
+    Removes extra residues beyond the target protein sequence to ensure
+    proper alignment with the predicted structure.
     
     Parameters
     ----------
     exp_chain : Bio.PDB.Chain
         Experimental chain to truncate
     max_resid : int
-        Maximum residue number to keep
+        Maximum residue number to keep (from predicted structure)
     """
     # Remove residues beyond the maximum residue ID of the predicted chain
     for res in list(exp_chain.get_residues()):
@@ -471,26 +633,35 @@ def _truncate_fusion_protein(exp_chain, max_resid) -> None:
             exp_chain.detach_child(res.id)
 
 # ---------------------------------------------------------------------------
-# Alignment with reference structure
+# Alignment with reference structure for orientation
 # ---------------------------------------------------------------------------
 
 def align_with_reference(structure_path: str, reference_path: str, output_path: str) -> Tuple[float, float]:
     """
-    Align a structure with a reference structure using CA atoms.
+    Align a structure to a reference structure using CA atom superposition.
+    
+    Performs rigid-body superposition of two protein structures based on their
+    CA (alpha-carbon) atoms. This is used for orienting structures to a common
+    reference frame, typically using a structure containing DUM orientation markers.
     
     Parameters
     ----------
     structure_path : str
-        Path to the structure to align
+        Path to the structure to be aligned
     reference_path : str
         Path to the reference structure
     output_path : str
-        Path to save the aligned structure
+        Path where the aligned structure will be saved
         
     Returns
     -------
     tuple
-        (RMSD before alignment, RMSD after alignment)
+        (RMSD before alignment, RMSD after alignment) both in Angstroms
+        
+    Raises
+    ------
+    ValueError
+        If no CA atoms are found in either structure
     """
     parser = PDBParser(QUIET=True)
     
@@ -531,7 +702,7 @@ def align_with_reference(structure_path: str, reference_path: str, output_path: 
     return rms_before, rms_after
 
 # ---------------------------------------------------------------------------
-# Main user‑level function with enhancements
+# Main alignment and patching function
 # ---------------------------------------------------------------------------
 
 def align_and_patch(
@@ -545,45 +716,85 @@ def align_and_patch(
     uniprot_id: Optional[str] = None,
     reference_paths: Optional[Dict[str, str]] = None
 ) -> dict:
-    """Align prediction(s) onto *exp_path*, fill gaps, and return a metrics dict.
+    """
+    Align predicted structures onto experimental structure and patch missing regions.
+    
+    This is the main function that orchestrates the complete alignment and patching
+    workflow. It:
+    
+    1. Finds optimal chain correspondence between predicted and experimental structures
+    2. Performs structural superposition using MDAnalysis
+    3. Detects gaps (missing regions) in the experimental structure
+    4. Patches gaps using coordinates from the predicted structure
+    5. Handles both single-chain and multi-chain complexes (homo/hetero-oligomers)
+    6. Detects and handles fusion proteins
+    7. Calculates quality metrics (RMSD, gap statistics)
+    8. Manages temporary files with automatic cleanup
+    
+    The function uses a sophisticated chain-pairing algorithm that combines
+    sequence similarity and structural RMSD to find the best correspondence,
+    which is essential for multi-chain complexes.
     
     Parameters
     ----------
     af_path : str
-        Path to directory containing predicted PDB files
+        Directory containing AlphaFold predicted PDB files
     exp_path : str
         Path to experimental PDB file
     gene : str
-        Gene name
+        Gene name for output file naming
     prot_len : int
-        Protein length (kept for API compatibility)
+        Protein length (retained for API compatibility, not actively used)
     window : int
-        Window size (kept for API compatibility)
+        Window size (retained for API compatibility, not actively used)
     outdir : str
-        Output directory
+        Output directory for aligned and patched structures
     partner_ids : Optional[List[str]], optional
-        List of interaction partner IDs, default None
+        List of UniProt IDs for interaction partners (for hetero-oligomers)
     uniprot_id : Optional[str], optional
-        UniProt ID of the main protein, default None
+        UniProt ID of the main protein
     reference_paths : Optional[Dict[str, str]], optional
-        Dictionary mapping UniProt IDs to reference structure paths, default None
+        Dictionary mapping UniProt IDs to reference structure paths
+        for subsequent orientation
         
     Returns
     -------
     dict
-        Dictionary containing metrics and paths to generated files
+        Comprehensive results dictionary containing:
+        - gene: Gene name
+        - pdb_id: PDB ID with hyperlink
+        - aligned_pdb: Path to aligned structure
+        - patched_pdb: Path to patched structure
+        - patched_with_hetatm_pdb: Patched structure with ligands
+        - oriented_pdb: Path to oriented structure (if reference provided)
+        - fusion_protein: Boolean indicating fusion protein detection
+        - is_heteromer: Boolean for hetero-oligomer
+        - interaction_partners: List of partner IDs
+        - n_CA_common_before_patch: Number of aligned CA atoms before patching
+        - n_CA_common_after_patch: Number of aligned CA atoms after patching
+        - gaps_found: String listing all detected gaps
+        - gaps_used: String listing gaps that were patched
+        - gap_count: Total number of gaps
+        - nb_atoms_to_patch: Total atoms in gap regions
+        - patched_atoms: Number of atoms successfully patched
+        - %_gaps_patched: Percentage of gaps patched
+        - rmsd_exp: RMSD between predicted and experimental (Å)
+        - rmsd_patched: RMSD between predicted and patched (Å)
+        - rmsd_oriented: RMSD after orientation (Å)
+        - rmsd_pairs: Per-chain RMSD values
+        - status: 'ok' or 'error'
         
     Raises
     ------
     RuntimeError
-        If no PDB files are found or if no chain can be paired
+        If no PDB files found in af_path or if no chains can be paired
     """
     # List to track all temporary files for cleanup at the end
     all_temp_files = []
 
     try:
         # ---------------------------------------------------------------------
-        # Discover prediction files
+        # Discover and validate prediction files
         # ---------------------------------------------------------------------
         if not glob.glob(os.path.join(af_path, "*.pdb")):
             raise RuntimeError(f"No PDB files found in {af_path!r}")
@@ -593,8 +804,11 @@ def align_and_patch(
         if not valid:
             raise RuntimeError("No chain could be paired with experimental model")
 
+        # Extract PDB ID and create hyperlink for Excel output
         pdbid_raw = os.path.splitext(os.path.basename(exp_path))[0].split("_")[-1].upper()
         pdbid = f'=HYPERLINK("https://www.rcsb.org/structure/{pdbid_raw}", "{pdbid_raw}")'
+        
+        # Initialize results dictionary with all expected fields
         res: Dict = {
             "gene": gene,
             "pdb_id": pdbid,
@@ -620,8 +834,10 @@ def align_and_patch(
             "status": "error"
         }
 
-        # ------ Check if experimental structure is heteromeric
-        # Analyze the experimental structure
+        # ---------------------------------------------------------------------
+        # Analyze experimental structure and determine oligomeric state
+        # ---------------------------------------------------------------------
+        # Parse experimental structure to identify chains
         exp_parser = PDBParser(QUIET=True)
         exp_structure = exp_parser.get_structure("exp", exp_path)
         exp_chains = list(exp_structure[0].get_chains())
@@ -632,48 +848,51 @@ def align_and_patch(
         if uniprot_id:
             log.info(f"UniProt ID: {uniprot_id}")
 
-        # Normalize partner_ids format (regardless of chain count)
+        # Normalize partner_ids to list format regardless of chain count
         if partner_ids is None:
             partner_ids = []
         elif isinstance(partner_ids, str):
             partner_ids = [partner_ids]
         
-        # Process partner_ids and set metadata
+        # Determine oligomeric state and log chain assignments
         if len(exp_chains) > 1:
-            # Log chain correspondences
+            # Multi-chain structure: log chain correspondences for transparency
             log.info("Chain-protein correspondences:")
             for key, (exp_chain, details) in mapping.items():
                 pred_file = os.path.basename(details["source"])
                 pred_chain = details["pred_chain"]
                 log.info(f"• {pred_file}:{pred_chain} → {pdbid}:{exp_chain} (RMSD: {details.get('rmsd', 'N/A')})")
             
-            # Associate partners with chains if possible
+            # Map partners to chains if information is available
             if partner_ids and len(partner_ids) <= len(exp_chain_ids):
                 for i, (partner, chain) in enumerate(zip(partner_ids, exp_chain_ids)):
                     log.info(f"• UniProt {partner} → Chain {chain}")
         
-        # Set metadata
+        # Set oligomeric state metadata
         res["interaction_partners"] = partner_ids
         res["is_heteromer"] = bool(partner_ids)
         log.info(f"Structure defined as: {'HETEROMER' if res['is_heteromer'] else 'HOMOMER'}")
         
         # ---------------------------------------------------------------------
-        # Load experimental structure once (protein only) – hybrid will grow
+        # Load experimental structure and prepare for gap patching
         # ---------------------------------------------------------------------
-        # Create a persistent temporary file for the padded PDB
+        # Create normalized experimental structure (protein only)
         padded_exp = _pad_pdb(exp_path)
         all_temp_files.append(padded_exp)
         
         hybrid = mda.Universe(padded_exp)
 
-        # Collector for per‑chain universes and RMSDs
+        # Collector for per-chain universes and RMSDs
         predicted: List[Tuple[str, str, mda.Universe, List[str]]] = []
 
+        # ---------------------------------------------------------------------
+        # Process each chain pair: alignment and fusion detection
+        # ---------------------------------------------------------------------
         for key, (exp_chain, details) in valid:
             src_pred = details["source"]
             pred_chain = details["pred_chain"]
 
-            # ----- Check for fusion protein case
+            # Check for fusion protein and truncate if necessary
             pred_struct = exp_parser.get_structure("pred", src_pred)
             for p_chain in pred_struct.get_chains():
                 if p_chain.id == pred_chain:

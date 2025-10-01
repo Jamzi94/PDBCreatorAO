@@ -1,3 +1,20 @@
+"""
+uniprot.py
+
+Fetch and parse protein metadata from the UniProt database.
+
+This module provides functions to retrieve comprehensive protein information
+from UniProt's REST API, including:
+ - Gene names and protein descriptions
+ - PDB structure references
+ - Natural variants (SNPs)
+ - Pharmaceutical relevance and tissue specificity
+ - Database cross-references (TCDB, DrugCentral)
+ - Protein-protein interactions
+ 
+Results are cached locally to minimize API calls and improve performance.
+"""
+
 import os
 import requests
 import json
@@ -21,7 +38,26 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 def fetch_uniprot_json(uniprot_id: str) -> dict:
     """
-    Fetch UniProt entry JSON for the given UniProt ID, with caching.
+    Fetch UniProt entry data for a given UniProt ID, with local caching.
+    
+    Queries the UniProt REST API to retrieve comprehensive protein data.
+    Results are cached in a local directory to avoid repeated API calls
+    for the same protein.
+    
+    Parameters
+    ----------
+    uniprot_id : str
+        UniProt accession ID (e.g., 'P12345')
+        
+    Returns
+    -------
+    dict
+        Complete UniProt entry as a JSON dictionary
+        
+    Raises
+    ------
+    requests.HTTPError
+        If the API request fails
     """
     uniprot_id = uniprot_id.strip()
     cache_file = os.path.join(CACHE_DIR, f"{uniprot_id}.json")
@@ -46,7 +82,23 @@ def fetch_uniprot_json(uniprot_id: str) -> dict:
 
 def get_first_comment(comments: List[dict], comment_type: str) -> str:
     """
-    Extract the first comment of a given type from UniProt JSON comments.
+    Extract the first comment of a specified type from UniProt comments.
+    
+    UniProt entries contain various comment types (e.g., PHARMACEUTICAL,
+    TISSUE SPECIFICITY). This function retrieves the text content of the
+    first matching comment.
+    
+    Parameters
+    ----------
+    comments : List[dict]
+        List of comment dictionaries from UniProt JSON
+    comment_type : str
+        Type of comment to extract (e.g., 'PHARMACEUTICAL')
+        
+    Returns
+    -------
+    str
+        Text content of the first matching comment, or empty string if not found
     """
     for c in comments:
         if c.get("commentType") == comment_type:
@@ -62,7 +114,25 @@ def get_first_comment(comments: List[dict], comment_type: str) -> str:
 
 def get_interactions(uniprot_id: str) -> dict:
     """
-    Retrieve only the cc_interaction block.
+    Retrieve protein interaction data from UniProt.
+    
+    Fetches only the interaction comment block for the specified protein,
+    which contains information about known protein-protein interactions.
+    
+    Parameters
+    ----------
+    uniprot_id : str
+        UniProt accession ID
+        
+    Returns
+    -------
+    dict
+        UniProt interaction data as JSON dictionary
+        
+    Raises
+    ------
+    requests.HTTPError
+        If the API request fails
     """
     url = f"{BASE_URL}/{uniprot_id}"
     resp = requests.get(url,
@@ -78,7 +148,27 @@ log = logging.getLogger(__name__)
 
 def find_related_uniprots(entry_uniprot: str, data: dict) -> List[Dict[str, str]]:
     """
-    Extract UniProt partners whose ID starts with the same prefix as entry_uniprot.
+    Extract interaction partners with matching UniProt ID prefix.
+    
+    Parses the interaction comments to find protein partners whose UniProt IDs
+    share the same 5-character prefix as the query protein. This helps identify
+    related proteins within the same organism or protein family.
+    
+    Only partners with both a valid UniProt ID (without hyphens) and a gene name
+    are included in the results.
+    
+    Parameters
+    ----------
+    entry_uniprot : str
+        Query UniProt accession ID
+    data : dict
+        Complete UniProt entry JSON data
+        
+    Returns
+    -------
+    List[Dict[str, str]]
+        List of dictionaries containing 'uniprot_id' and 'gene_name' for each
+        related interaction partner
     """
     related = []
     prefix = entry_uniprot[:5]
@@ -99,7 +189,32 @@ def find_related_uniprots(entry_uniprot: str, data: dict) -> List[Dict[str, str]
 
 def parse_uniprot_data(data: dict) -> dict:
     """
-    Parse UniProt JSON data and extract standard fields plus interactions.
+    Parse UniProt JSON data and extract all relevant protein information.
+    
+    Extracts a comprehensive set of protein metadata including:
+    - Gene name and protein description
+    - PDB structure references
+    - Natural variants (SNPs) with position and amino acid changes
+    - Pharmaceutical applications
+    - Database cross-references (TCDB, DrugCentral)
+    - Tissue-specific expression
+    - Annotation quality score
+    - Cofactors and polymorphism information
+    - Protein sequence
+    - Interaction partners
+    
+    Parameters
+    ----------
+    data : dict
+        Complete UniProt entry as JSON dictionary
+        
+    Returns
+    -------
+    dict
+        Dictionary containing parsed protein information with keys:
+        gene, protein_name, pdb_ids, variants, pharmaceutical, tcdb_id,
+        drugcentral_id, tissue, annotation_score, cofactor, polymorphism,
+        sequence, interaction_partners
     """
     # Gene name
     gene = ""

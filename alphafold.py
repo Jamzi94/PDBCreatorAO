@@ -1,3 +1,17 @@
+"""
+alphafold.py
+
+Interact with the AlphaFold database API to retrieve predicted protein structures.
+
+This module provides functions to:
+ - Query the AlphaFold database for available predictions
+ - Download AlphaFold predicted PDB structures
+ - Extract prediction metadata and quality metrics
+
+The AlphaFold database provides AI-predicted 3D structures for millions of proteins,
+which serve as complementary data to experimental structures.
+"""
+
 import os
 import requests
 import logging
@@ -14,8 +28,20 @@ API_PRED_TEMPLATE = (
 
 def _fetch_predictions(uniprot_id: str) -> list:
     """
-    Internal: fetch the list of AlphaFold predictions for a UniProt ID.
-    Returns a list (possibly empty) of prediction dicts.
+    Fetch the list of AlphaFold predictions for a UniProt accession.
+    
+    Internal helper function that queries the AlphaFold API to retrieve
+    all available predictions for the specified protein.
+    
+    Parameters
+    ----------
+    uniprot_id : str
+        UniProt accession ID
+        
+    Returns
+    -------
+    list
+        List of prediction dictionaries (empty list if none found or error occurs)
     """
     url = API_PRED_TEMPLATE.format(uniprot_id=uniprot_id, api_key=API_KEY)
     try:
@@ -32,8 +58,20 @@ def _fetch_predictions(uniprot_id: str) -> list:
 
 def get_alphafold_pdb_info(uniprot_id: str) -> str:
     """
-    Return the AlphaFold 'entryId' (e.g. 'AF-P14859-F1') for the given UniProt ID,
-    or an empty string if none is available.
+    Get the AlphaFold entry identifier for a protein.
+    
+    Retrieves the AlphaFold database entry ID (e.g., 'AF-P14859-F1') which
+    uniquely identifies the predicted structure.
+    
+    Parameters
+    ----------
+    uniprot_id : str
+        UniProt accession ID
+        
+    Returns
+    -------
+    str
+        AlphaFold entry identifier, or empty string if no prediction exists
     """
     preds = _fetch_predictions(uniprot_id)
     if not preds:
@@ -44,8 +82,23 @@ def get_alphafold_pdb_info(uniprot_id: str) -> str:
 
 def download_alphafold_pdb(uniprot_id: str, output_path: str) -> bool:
     """
-    Download the AlphaFold PDB file for uniprot_id to the given path.
-    Returns True on success, False otherwise.
+    Download the AlphaFold predicted structure file in PDB format.
+    
+    Retrieves the PDB file for the AlphaFold prediction and saves it to
+    the specified path. The file contains atomic coordinates and confidence
+    scores (pLDDT) for the predicted structure.
+    
+    Parameters
+    ----------
+    uniprot_id : str
+        UniProt accession ID
+    output_path : str
+        Path where the PDB file should be saved
+        
+    Returns
+    -------
+    bool
+        True if download succeeded, False otherwise
     """
     preds = _fetch_predictions(uniprot_id)
     if not preds or not preds[0].get("pdbUrl"):
@@ -65,10 +118,33 @@ def download_alphafold_pdb(uniprot_id: str, output_path: str) -> bool:
 
 def get_alphafold_details(uniprot_id: str, prot_name: str) -> dict:
     """
-    Retrieve summary details of the AlphaFold model for the given UniProt ID.
-    Returns a dict with keys:
-      method, resolution, methodology, conformation,
-      count, descs, chains, orgs
+    Retrieve summary metadata for an AlphaFold predicted structure.
+    
+    Gathers basic information about the AlphaFold prediction to provide
+    consistent metadata fields comparable to experimental structures.
+    Since AlphaFold models are computational predictions, some fields
+    (resolution, conformation, environment) are marked as not applicable.
+    
+    Parameters
+    ----------
+    uniprot_id : str
+        UniProt accession ID
+    prot_name : str
+        Protein name to use in the description
+        
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - method: 'Prediction'
+        - resolution: 'N/A' (not applicable for predictions)
+        - methodology: 'AlphaFold'
+        - conformation: 'Not specified'
+        - environment: 'NA'
+        - count: 1 if prediction exists, 0 otherwise
+        - descs: Protein name/description
+        - chains: 'A' (AlphaFold models are single-chain)
+        - orgs: Source organism scientific name
     """
     preds = _fetch_predictions(uniprot_id)
     if not preds:
@@ -91,15 +167,15 @@ def get_alphafold_details(uniprot_id: str, prot_name: str) -> dict:
     conformation = "Not specified"
     environment = "NA"
 
-    # You could decide to infer conformation from templateModelQuality or other fields
-    # but by default AlphaFold predictions have no explicit 'conformation'.
+    # AlphaFold predictions don't have explicit conformational states
+    # Conformation could potentially be inferred from structural analysis
     entry_id = p.get("entryId", "")
     count = 1 if entry_id else 0
 
-    # Description: use the protein name passed in
+    # Use the provided protein name as the description
     descs = prot_name
 
-    # Chains: AlphaFold models are single‐chain, chain ID 'A'
+    # AlphaFold models are single-chain structures with chain ID 'A'
     chains = "A"
 
     # Organism name from the returned JSON

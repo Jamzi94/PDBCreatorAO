@@ -1,11 +1,16 @@
 """
 structure_analysis.py
 
-Parse PDB files to extract:
- - Secondary structure annotations (HELIX/SHEET)
- - SEQRES length
- - Missing-residue gaps and low-confidence coils
- - Small-molecule (HETATM) lists
+Parse PDB files to extract structural features and quality metrics.
+
+This module provides utilities for analyzing protein structure files:
+ - Secondary structure annotations (HELIX/SHEET records)
+ - SEQRES declared sequence length
+ - Missing-residue gaps and low-confidence coil regions
+ - Small-molecule ligands (HETATM entries)
+ 
+These analyses help assess structure quality and identify regions that
+may need patching or special attention during structural alignment.
 """
 
 import re
@@ -17,8 +22,23 @@ from Bio.PDB.Polypeptide import is_aa
 
 def parse_helix_sheet_annotations(pdb_file: str, chain_id: str = 'A') -> dict:
     """
-    Parse HELIX/SHEET records from a PDB file.
-    Returns a dict mapping residue numbers to 'H' (helix) or 'E' (sheet).
+    Parse HELIX and SHEET records from a PDB file for secondary structure annotation.
+    
+    Reads the PDB header to identify helical and sheet regions for the specified chain,
+    creating a mapping of residue positions to their secondary structure type.
+    
+    Parameters
+    ----------
+    pdb_file : str
+        Path to the PDB file to parse
+    chain_id : str, optional
+        Chain identifier to extract annotations for, default 'A'
+        
+    Returns
+    -------
+    dict
+        Dictionary mapping residue numbers to secondary structure type:
+        'H' for helix, 'E' for beta-sheet (extended strand)
     """
     ss_map = {}
     with open(pdb_file, 'r') as f:
@@ -38,7 +58,22 @@ def parse_helix_sheet_annotations(pdb_file: str, chain_id: str = 'A') -> dict:
 
 def get_seqres_length(pdb_file: str, chain_id: str = 'A') -> int:
     """
-    Return the number of residues declared in SEQRES for the given chain.
+    Get the declared sequence length from SEQRES records in a PDB file.
+    
+    SEQRES records contain the complete amino acid sequence as defined in the
+    source database, which may differ from the observed residues in the ATOM records.
+    
+    Parameters
+    ----------
+    pdb_file : str
+        Path to the PDB file to parse
+    chain_id : str, optional
+        Chain identifier to extract length for, default 'A'
+        
+    Returns
+    -------
+    int
+        Total number of residues declared in SEQRES for the specified chain
     """
     length = 0
     with open(pdb_file, 'r') as f:
@@ -51,7 +86,25 @@ def get_seqres_length(pdb_file: str, chain_id: str = 'A') -> int:
 
 def group_segments(numbers: List[int]) -> List[Tuple[int, int]]:
     """
-    Group a sorted list of integers into contiguous (start, end) pairs.
+    Group a sorted list of integers into contiguous segments.
+    
+    Identifies consecutive integers and groups them into (start, end) pairs,
+    useful for representing residue ranges or gap regions compactly.
+    
+    Parameters
+    ----------
+    numbers : List[int]
+        Sorted list of integers to group
+        
+    Returns
+    -------
+    List[Tuple[int, int]]
+        List of (start, end) tuples representing contiguous segments
+        
+    Examples
+    --------
+    >>> group_segments([1, 2, 3, 5, 6, 10])
+    [(1, 3), (5, 6), (10, 10)]
     """
     from itertools import groupby, count
     segments = []
@@ -68,12 +121,32 @@ def detect_gaps_and_discard_coils(
     coil_length_threshold: int
 ) -> List[Tuple[str, int, int]]:
     """
-    Detect missing-residue gaps (from REMARK 465 or numbering) and
-    consecutive low-confidence coil segments (avg B-factor < plddt_threshold)
-    of at least coil_length_threshold length.
-
-    Returns a list of tuples: (issue_type, start_res, end_res).
-    issue_type in {"GAP_NTER","GAP","GAP_CTER","Coil_rejeté"}.
+    Detect structural issues including missing residues and low-confidence regions.
+    
+    Identifies two types of structural problems:
+    1. Missing residues (gaps) detected from REMARK 465 records or residue numbering
+    2. Low-confidence coil segments where average B-factor is below threshold
+    
+    Gaps are classified as N-terminal, C-terminal, or internal based on their position.
+    Low-confidence regions are only reported if they exceed the minimum length threshold.
+    
+    Parameters
+    ----------
+    pdb_file : str
+        Path to the PDB file to analyze
+    chain_id : str
+        Chain identifier to analyze
+    plddt_threshold : float
+        B-factor/pLDDT threshold below which residues are considered low-confidence
+    coil_length_threshold : int
+        Minimum number of consecutive low-confidence residues to report
+        
+    Returns
+    -------
+    List[Tuple[str, int, int]]
+        List of issues as (issue_type, start_residue, end_residue) tuples
+        Issue types: "GAP_NTER" (N-terminal gap), "GAP" (internal gap),
+                    "GAP_CTER" (C-terminal gap), "Coil_rejeté" (rejected coil)
     """
     parser = PDBParser(QUIET=True)
     try:
@@ -157,8 +230,21 @@ def detect_gaps_and_discard_coils(
 
 def parse_small_molecules(pdb_file: str) -> List[str]:
     """
-    Return a sorted list of unique small‐molecule residue names.
-    Excludes water (HOH, WAT).
+    Extract small molecule ligand names from a PDB file.
+    
+    Parses both HET header records and HETATM coordinate lines to identify
+    all small molecules (ligands, cofactors, substrates) present in the structure.
+    Water molecules (HOH, WAT) are automatically excluded from the results.
+    
+    Parameters
+    ----------
+    pdb_file : str
+        Path to the PDB file to parse
+        
+    Returns
+    -------
+    List[str]
+        Sorted list of unique small molecule residue names (3-letter codes)
     """
     ligands = set()
     with open(pdb_file, 'r') as f:
