@@ -62,7 +62,7 @@ def get_first_comment(comments: List[dict], comment_type: str) -> str:
 
 def get_interactions(uniprot_id: str) -> dict:
     """
-    Récupère uniquement le bloc cc_interaction.
+    Retrieve only the cc_interaction block.
     """
     url = f"{BASE_URL}/{uniprot_id}"
     resp = requests.get(url,

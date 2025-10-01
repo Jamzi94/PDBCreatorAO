@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ---------------------------------------------------------------------------
-# Module d'alignement multi-référence pour structures PDB
+# Multi-reference alignment module for PDB structures
 # ---------------------------------------------------------------------------
 
 import logging
@@ -15,33 +15,33 @@ import pandas as pd
 import openpyxl
 from Bio.PDB import PDBParser, Superimposer, PDBIO
 
-# --- Constantes & expressions régulières ---
+# --- Constants & regular expressions ---
 DUM_RE = re.compile(r"\bDUM\b", re.IGNORECASE)
 HYP_RE = re.compile(
     r'=?HYPERLINK\(\s*"[^"]*"\s*[;,]\s*"(?P<id>[A-Za-z0-9\-]+)"\s*\)',
     re.IGNORECASE
 )
 
-# --- Configuration du logging ---
+# --- Logging configuration ---
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Fonctions utilitaires pour l'extraction et le traitement des données
+# Utility functions for data extraction and processing
 # ---------------------------------------------------------------------------
 
 def extract_pdb_from_cell(cell) -> str:
     """
-    Extrait l'identifiant PDB d'une cellule Excel, qu'il soit sous forme de lien hypertexte ou de texte.
+    Extract PDB identifier from an Excel cell, whether as hyperlink or text.
     
     Parameters
     ----------
     cell : openpyxl.cell.Cell
-        Cellule Excel à traiter
+        Excel cell to process
         
     Returns
     -------
     str
-        Identifiant PDB extrait, ou None si la cellule est vide
+        Extracted PDB identifier, or None if the cell is empty
     """
     if cell.hyperlink and cell.hyperlink.target:
         return Path(cell.hyperlink.target).stem.upper()
@@ -54,31 +54,31 @@ def extract_pdb_from_cell(cell) -> str:
 
 def load_sheet(excel_file: Path, name: str) -> pd.DataFrame:
     """
-    Charge une feuille spécifique d'un fichier Excel et la convertit en DataFrame.
+    Load a specific sheet from an Excel file and convert it to DataFrame.
     
     Parameters
     ----------
     excel_file : Path
-        Chemin vers le fichier Excel
+        Path to the Excel file
     name : str
-        Nom de la feuille à charger
+        Name of the sheet to load
         
     Returns
     -------
     pd.DataFrame
-        DataFrame contenant les données de la feuille
+        DataFrame containing the sheet data
         
     Raises
     ------
     SystemExit
-        Si le fichier Excel ou la feuille n'existe pas
+        If the Excel file or sheet does not exist
     """
     if not excel_file.is_file():
-        logger.error(f"Excel manquant: {excel_file}")
+        logger.error(f"Missing Excel file: {excel_file}")
         sys.exit(1)
     wb = openpyxl.load_workbook(excel_file, data_only=False)
     if name not in wb.sheetnames:
-        logger.error(f"Feuille '{name}' manquante ({wb.sheetnames})")
+        logger.error(f"Sheet '{name}' not found (available: {wb.sheetnames})")
         sys.exit(1)
     ws = wb[name]
     headers = [str(c.value).strip().lower().replace(" ", "_") for c in ws[1]]
@@ -87,30 +87,30 @@ def load_sheet(excel_file: Path, name: str) -> pd.DataFrame:
         rec = {h: extract_pdb_from_cell(c) for h, c in zip(headers, row)}
         rows.append(rec)
     df = pd.DataFrame(rows)
-    logger.info(f"[{name}] chargée: {df.shape[0]} lignes")
+    logger.info(f"[{name}] loaded: {df.shape[0]} rows")
     return df
 
 
 def filter_and_cascade(df_det: pd.DataFrame, df_ali: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Filtre les structures et cascade le filtrage aux données d'alignement.
+    Filter structures and cascade filtering to alignment data.
     
     Parameters
     ----------
     df_det : pd.DataFrame
-        DataFrame contenant les détails des structures PDB
+        DataFrame containing PDB structure details
     df_ali : pd.DataFrame
-        DataFrame contenant les informations d'alignement
+        DataFrame containing alignment information
         
     Returns
     -------
     tuple[pd.DataFrame, pd.DataFrame]
-        Tuple contenant les DataFrames filtrés (détails, alignement)
+        Tuple containing filtered DataFrames (details, alignment)
     """
-    # Cascade vers Alignment_Summary
+    # Cascade to Alignment_Summary
     valid = set(df_det['pdb_id'].dropna().str.upper())
     df_ali_proc = df_ali[df_ali['pdb_id'].str.upper().isin(valid)].reset_index(drop=True)
-    logger.info(f"Traité: PDB_Details {df_det.shape[0]} lignes, Alignment_Summary {df_ali_proc.shape[0]} lignes")
+    logger.info(f"Processed: PDB_Details {df_det.shape[0]} rows, Alignment_Summary {df_ali_proc.shape[0]} rows")
     return df_det, df_ali_proc
 
 
@@ -118,21 +118,21 @@ def superimpose_structures(ref_path: Path,
                            df_targets: pd.DataFrame,
                            out_root: Path) -> list[tuple[str, str, float, float]]:
     """
-    Superpose les structures cibles sur une structure de référence.
+    Superimpose target structures onto a reference structure.
     
     Parameters
     ----------
     ref_path : Path
-        Chemin vers la structure de référence
+        Path to the reference structure
     df_targets : pd.DataFrame
-        DataFrame contenant les informations sur les structures cibles
+        DataFrame containing information about target structures
     out_root : Path
-        Répertoire racine pour les structures alignées
+        Root directory for aligned structures
         
     Returns
     -------
     list[tuple[str, str, float, float]]
-        Liste de tuples (pdb_id, chemin_aligné, rmsd_avant, rmsd_après)
+        List of tuples (pdb_id, aligned_path, rmsd_before, rmsd_after)
     """
     parser = PDBParser(QUIET=True)
     ref_struct = parser.get_structure('ref', str(ref_path))
@@ -146,52 +146,52 @@ def superimpose_structures(ref_path: Path,
         gene = row['gene_name']
         uniprot = row['uniprot_id']
         in_path = Path(row['patched_pdb'])
-        # Prépare le chemin de sortie
+        # Prepare output path
         subdir = out_root / f"{gene}_{uniprot}"
         subdir.mkdir(parents=True, exist_ok=True)
         out_name = f"oriented_{gene}_{uniprot}_{pdb_id}.pdb"
         out_path = subdir / out_name
-        # Charge et aligne
+        # Load and align
         tgt_struct = parser.get_structure(pdb_id, str(in_path))
         tgt_atoms = [a for a in tgt_struct[0].get_atoms() if a.get_id() == 'CA']
         n = min(len(ref_atoms), len(tgt_atoms))
         ref_coords = np.array([a.get_coord() for a in ref_atoms[:n]])
         tgt_coords = np.array([a.get_coord() for a in tgt_atoms[:n]])
-        # RMSD avant
+        # RMSD before alignment
         rms_before = np.sqrt(((ref_coords - tgt_coords)**2).sum(axis=1).mean())
-        # Superpose et RMSD après
+        # Superimpose and get RMSD after
         sup.set_atoms(ref_atoms[:n], tgt_atoms[:n])
         rms_after = sup.rms
         sup.apply(tgt_struct.get_atoms())
         io.set_structure(tgt_struct)
         io.save(str(out_path))
-        logger.info(f"{pdb_id}: avant={rms_before:.3f}Å, après={rms_after:.3f}Å -> {out_path}")
+        logger.info(f"{pdb_id}: before={rms_before:.3f}Å, after={rms_after:.3f}Å -> {out_path}")
         results.append((pdb_id, str(out_path), rms_before, rms_after))
     return results
 
 
 # ---------------------------------------------------------------------------
-# Nouvelles fonctions pour l'alignement multi-référence
+# New functions for multi-reference alignment
 # ---------------------------------------------------------------------------
 
 def group_structures_by_attribute(df_det: pd.DataFrame, attribute: str) -> Dict[str, List[str]]:
     """
-    Regroupe les structures PDB par attribut spécifié (gene_name ou uniprot_id).
+    Group PDB structures by specified attribute (gene_name or uniprot_id).
     
     Parameters
     ----------
     df_det : pd.DataFrame
-        DataFrame contenant les détails des structures PDB
+        DataFrame containing PDB structure details
     attribute : str
-        Attribut pour le regroupement ('gene_name' ou 'uniprot_id')
+        Attribute for grouping ('gene_name' or 'uniprot_id')
         
     Returns
     -------
     Dict[str, List[str]]
-        Dictionnaire {valeur_attribut: [liste_pdb_ids]}
+        Dictionary {attribute_value: [list_of_pdb_ids]}
     """
     if attribute not in df_det.columns:
-        logger.error(f"Attribut '{attribute}' non trouvé dans le DataFrame")
+        logger.error(f"Attribute '{attribute}' not found in DataFrame")
         return {}
     
     groups = {}
@@ -208,43 +208,43 @@ def group_structures_by_attribute(df_det: pd.DataFrame, attribute: str) -> Dict[
 
 def find_dum_references(df_det: pd.DataFrame, groups: Dict[str, List[str]]) -> Dict[str, str]:
     """
-    Trouve une référence contenant DUM pour chaque groupe.
+    Find a reference containing DUM for each group.
     
     Parameters
     ----------
     df_det : pd.DataFrame
-        DataFrame contenant les détails des structures PDB
+        DataFrame containing PDB structure details
     groups : Dict[str, List[str]]
-        Dictionnaire des groupes de structures
+        Dictionary of structure groups
         
     Returns
     -------
     Dict[str, str]
-        Dictionnaire {groupe: pdb_id_reference}
+        Dictionary {group: reference_pdb_id}
     """
     references = {}
     
-    # Vérifie si 'small_molecules' est dans les colonnes
+    # Check if 'small_molecules' column exists
     if 'small_molecules' not in df_det.columns:
-        logger.warning("Colonne 'small_molecules' non trouvée, impossible de détecter DUM")
+        logger.warning("Column 'small_molecules' not found, cannot detect DUM")
         return references
     
-    # Pour chaque groupe, trouve une référence avec DUM
+    # For each group, find a reference with DUM
     for group, pdb_ids in groups.items():
-        # Filtre le DataFrame pour ce groupe
+        # Filter DataFrame for this group
         group_df = df_det[df_det['pdb_id'].isin(pdb_ids)].copy()
         
-        # Cherche les structures avec DUM
+        # Search for structures with DUM
         sm = group_df['small_molecules'].fillna("").str.upper()
         dum_mask = sm.str.contains(DUM_RE)
         
         if dum_mask.any():
-            # Prend la première structure avec DUM comme référence
+            # Take the first structure with DUM as reference
             ref_id = group_df.loc[dum_mask, 'pdb_id'].iloc[0]
             references[group] = ref_id
-            logger.info(f"Groupe {group}: référence avec DUM trouvée: {ref_id}")
+            logger.info(f"Group {group}: DUM reference found: {ref_id}")
         else:
-            logger.warning(f"Groupe {group}: aucune référence avec DUM trouvée")
+            logger.warning(f"Group {group}: no DUM reference found")
     
     return references
 
@@ -253,72 +253,72 @@ def align_structures_by_groups(excel_file: Path,
                               group_by: str = 'gene_name',
                               out_root: Optional[Path] = None) -> Dict[str, List[tuple]]:
     """
-    Aligne les structures PDB par groupes, en utilisant une référence avec DUM pour chaque groupe.
+    Align PDB structures by groups, using a DUM reference for each group.
     
     Parameters
     ----------
     excel_file : Path
-        Chemin vers le fichier Excel contenant les données
+        Path to the Excel file containing the data
     group_by : str, optional
-        Attribut pour le regroupement ('gene_name' ou 'uniprot_id'), par défaut 'gene_name'
+        Attribute for grouping ('gene_name' or 'uniprot_id'), default 'gene_name'
     out_root : Path, optional
-        Répertoire racine pour les structures alignées, par défaut 'pdb_structures_oriented'
+        Root directory for aligned structures, default 'pdb_structures_oriented'
         
     Returns
     -------
     Dict[str, List[tuple]]
-        Dictionnaire {groupe: [(pdb_id, chemin_aligné, rmsd_avant, rmsd_après)]}
+        Dictionary {group: [(pdb_id, aligned_path, rmsd_before, rmsd_after)]}
     """
     if out_root is None:
         out_root = Path('pdb_structures_oriented')
     
-    # Charge les feuilles Excel
+    # Load Excel sheets
     df_det_all = load_sheet(excel_file, 'PDB_Details')
     df_ali_all = load_sheet(excel_file, 'Alignment_Summary')
     
-    # Vérifie que les colonnes nécessaires existent
+    # Check that required columns exist
     required_cols = ['pdb_id', group_by, 'small_molecules']
     for col in required_cols:
         if col not in df_det_all.columns:
-            logger.error(f"Colonne requise '{col}' non trouvée dans PDB_Details")
+            logger.error(f"Required column '{col}' not found in PDB_Details")
             return {}
     
     if 'patched_pdb' not in df_ali_all.columns:
-        logger.error("Colonne 'patched_pdb' non trouvée dans Alignment_Summary")
+        logger.error("Column 'patched_pdb' not found in Alignment_Summary")
         return {}
     
-    # Groupe les structures par attribut spécifié
+    # Group structures by specified attribute
     groups = group_structures_by_attribute(df_det_all, group_by)
-    logger.info(f"Structures regroupées par {group_by}: {len(groups)} groupes trouvés")
+    logger.info(f"Structures grouped by {group_by}: {len(groups)} groups found")
     
-    # Trouve les références avec DUM pour chaque groupe
+    # Find DUM references for each group
     references = find_dum_references(df_det_all, groups)
-    logger.info(f"Références avec DUM trouvées pour {len(references)}/{len(groups)} groupes")
+    logger.info(f"DUM references found for {len(references)}/{len(groups)} groups")
     
-    # Prépare le dictionnaire de résultats
+    # Prepare results dictionary
     all_results = {}
     all_aligned_results = []
     
-    # Pour chaque groupe avec une référence
+    # For each group with a reference
     for group, ref_id in references.items():
-        logger.info(f"Traitement du groupe {group} avec référence {ref_id}")
+        logger.info(f"Processing group {group} with reference {ref_id}")
         
-        # Obtient le chemin de la référence
+        # Get the reference path
         ref_row = df_ali_all[df_ali_all['pdb_id'] == ref_id]
         if ref_row.empty:
-            logger.warning(f"Référence {ref_id} non trouvée dans Alignment_Summary, groupe {group} ignoré")
+            logger.warning(f"Reference {ref_id} not found in Alignment_Summary, skipping group {group}")
             continue
         
         ref_path = Path(ref_row.iloc[0]['patched_pdb'])
         if not ref_path.is_file():
-            logger.error(f"Fichier de référence non trouvé: {ref_path}, groupe {group} ignoré")
+            logger.error(f"Reference file not found: {ref_path}, skipping group {group}")
             continue
         
-        # Filtre les structures du groupe (sauf la référence)
+        # Filter group structures (except reference)
         group_pdb_ids = groups[group]
         target_pdb_ids = [pid for pid in group_pdb_ids if pid != ref_id]
         
-        # Prépare le DataFrame des cibles
+        # Prepare target DataFrame
         df_targets = pd.merge(
             df_ali_all[df_ali_all['pdb_id'].isin(target_pdb_ids)],
             df_det_all[['pdb_id', 'gene_name', 'uniprot_id']],
@@ -326,13 +326,13 @@ def align_structures_by_groups(excel_file: Path,
         )
         
         if df_targets.empty:
-            logger.warning(f"Aucune structure cible trouvée pour le groupe {group}")
+            logger.warning(f"No target structures found for group {group}")
             continue
         
-        # Aligne les structures sur la référence
+        # Align structures to reference
         results = superimpose_structures(ref_path, df_targets, out_root)
         
-        # Copie la référence (déjà orientée)
+        # Copy reference (already oriented)
         ref_det_row = df_det_all[df_det_all['pdb_id'] == ref_id].iloc[0]
         gene = ref_det_row['gene_name']
         uniprot = ref_det_row['uniprot_id']
@@ -341,54 +341,54 @@ def align_structures_by_groups(excel_file: Path,
         out_name = f"oriented_{gene}_{uniprot}_{ref_id}.pdb"
         out_path = subdir / out_name
         shutil.copy(str(ref_path), str(out_path))
-        logger.info(f"Copié référence {ref_id} -> {out_path}")
+        logger.info(f"Copied reference {ref_id} -> {out_path}")
         
-        # Ajoute la référence aux résultats
+        # Add reference to results
         results.append((ref_id, str(out_path), None, None))
         
-        # Stocke les résultats pour ce groupe
+        # Store results for this group
         all_results[group] = results
         all_aligned_results.extend(results)
     
-    # Sauvegarde tous les résultats dans Excel
+    # Save all results to Excel
     df_res = pd.DataFrame(all_aligned_results, columns=['pdb_id', 'aligned_path', 'rmsd_before', 'rmsd_after'])
     with pd.ExcelWriter(excel_file, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
         df_res.to_excel(writer, sheet_name='Alignment_RMSD_MultiRef', index=False)
-    logger.info(f"Résultats sauvegardés dans 'Alignment_RMSD_MultiRef' dans {excel_file}")
+    logger.info(f"Results saved in 'Alignment_RMSD_MultiRef' in {excel_file}")
     
     return all_results
 
 
 # ---------------------------------------------------------------------------
-# Fonction principale pour l'utilisation en ligne de commande
+# Main function for command-line usage
 # ---------------------------------------------------------------------------
 
 def main():
     """
-    Fonction principale pour l'utilisation en ligne de commande.
+    Main function for command-line usage.
     """
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="Aligne et oriente les fichiers PDB par groupes sur des références contenant DUM"
+        description="Align and orient PDB files by groups on references containing DUM"
     )
     parser.add_argument('-e', '--excel', required=True,
-                        help='Fichier Excel contenant les données')
+                        help='Excel file containing the data')
     parser.add_argument('-g', '--group-by', choices=['gene_name', 'uniprot_id'], default='gene_name',
-                        help='Attribut pour le regroupement (gene_name ou uniprot_id)')
+                        help='Attribute for grouping (gene_name or uniprot_id)')
     parser.add_argument('-o', '--output', default='pdb_structures_oriented',
-                        help='Répertoire racine pour les structures alignées')
+                        help='Root directory for aligned structures')
     
     args = parser.parse_args()
     
-    # Configure le logging
+    # Configure logging
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
     
-    # Exécute l'alignement
+    # Execute alignment
     excel_file = Path(args.excel)
     out_root = Path(args.output)
     
