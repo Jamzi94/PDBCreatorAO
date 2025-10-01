@@ -117,7 +117,7 @@ def get_pdb_details(pdb_id: str) -> dict:
             d = (
                 poly.get("entity", {}).get("pdbx_description")
                 or poly.get("rcsb_polymer_entity", {}).get("pdbx_description")
-                or "Inconnue"
+                or "Unknown"
             )
             ch_list = poly.get("rcsb_polymer_entity_container_identifiers", {}) \
                           .get("auth_asym_ids", [])
