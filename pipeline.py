@@ -13,6 +13,7 @@ from structure_analysis import (detect_gaps_and_discard_coils,
                                 parse_helix_sheet_annotations)
 from alignment import align_and_patch
 from oriented import align_structures_by_groups
+from pathlib import Path
 
 
 # --------------------------------------------------------------------------- #
@@ -310,8 +311,8 @@ def main():
     log.info("Running multi-reference alignment and orientation")
     try:
         align_structures_by_groups(
-            excel_file=output_xlsx,
-            group_by='gene_name',    # ou 'uniprot_id' selon ton besoin
+            excel_file=Path(output_xlsx),  # <-- convert to Path
+            group_by='gene_name',
             out_root=Path(os.path.join(BASE, "pdb_structures_oriented"))
         )
         log.info("Multi-reference alignment completed")
