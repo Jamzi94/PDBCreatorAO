@@ -124,6 +124,12 @@ All sheets have clickable hyperlinks (UniProt, RCSB, AlphaFold, PubMed…).
 
 ---
 
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
 # Version Française
 
 **Description**  
@@ -244,3 +250,9 @@ Toutes les feuilles incluent des liens hypertextes.
 - Compatible mono-chaîne et multi-chaînes, gestion complexe des correspondances.
 - Sorties nommées systématiquement pour la reproductibilité.
 - Pipeline documenté via `pipeline.log` à chaque étape.
+
+---
+
+## Licence
+
+Ce projet est sous licence MIT - voir le fichier [LICENSE](LICENSE) pour plus de détails.
