@@ -1,3 +1,23 @@
+"""
+alignment.py
+
+Structural alignment and gap patching for protein structures.
+
+This module provides comprehensive functionality for aligning predicted protein
+structures (e.g., from AlphaFold) onto experimental structures and patching
+missing regions (gaps). It handles:
+
+- Multi-chain complexes (both homomeric and heteromeric)
+- Optimal chain-to-chain correspondence using sequence and structural alignment
+- Gap detection and filling using predicted structure coordinates
+- Fusion protein detection and handling
+- RMSD calculation before and after alignment
+- Temporary file management with automatic cleanup
+
+The alignment process uses both BioPython for sequence alignment and MDAnalysis
+for structural superposition to find the best chain correspondence.
+"""
+
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
@@ -26,6 +46,7 @@ from structure_analysis import group_segments
 
 
 # Suppress specific warnings commonly encountered with MDAnalysis
+# These warnings are expected and don't indicate problems with the analysis
 warnings.filterwarnings("ignore", category=UserWarning, module="MDAnalysis")
 warnings.filterwarnings("ignore", message="Reader has no dt information")
 warnings.filterwarnings("ignore", message="Unit cell dimensions not found*")
@@ -37,7 +58,8 @@ logging.getLogger("MDAnalysis").setLevel(logging.ERROR)
 
 log = logging.getLogger(__name__)
 
-# Constants for DUM detection
+# Regular expression pattern for detecting DUM (dummy atom) ligands
+# DUM atoms are used as orientation references in membrane protein structures
 DUM_RE = re.compile(r"\bDUM\b", re.IGNORECASE)
 
 
@@ -79,19 +101,24 @@ def _get_max_resid(src: str, chain_id: str, parser: Optional[PDBParser] = None) 
 # ---------------------------------------------------------------------------
 # Temporary file management
 # ---------------------------------------------------------------------------
+
 def create_persistent_temp_file(suffix=".pdb"):
     """
     Create a persistent temporary file that won't be automatically deleted.
     
+    Creates a temporary file that must be explicitly removed. This is necessary
+    because some operations require the file to persist beyond the scope of
+    the function that creates it.
+    
     Parameters
     ----------
     suffix : str, optional
-        Suffix for the temporary file, default ".pdb"
+        File extension for the temporary file, default ".pdb"
         
     Returns
     -------
     str
-        Path to the temporary file
+        Absolute path to the created temporary file
     """
     fd, tmp_path = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
@@ -100,6 +127,9 @@ def create_persistent_temp_file(suffix=".pdb"):
 def cleanup_temp_files(file_list):
     """
     Clean up a list of temporary files.
+    
+    Safely removes temporary files, logging warnings if deletion fails.
+    This ensures proper cleanup even when the pipeline encounters errors.
     
     Parameters
     ----------
@@ -114,53 +144,69 @@ def cleanup_temp_files(file_list):
                 log.warning(f"Failed to remove temporary file {file_path}: {e}")
 
 # ---------------------------------------------------------------------------
-# Chain‑pairing utilities
+# Chain-pairing utilities
 # ---------------------------------------------------------------------------
 
 def _find_best_chain_pair(pred_dir: str, exp_path: str) -> Dict[str, Tuple[str, Dict]]:
-    """Pair every *predicted chain* with the experimental chain of lowest RMSD.
+    """
+    Pair predicted chains with experimental chains using optimal RMSD alignment.
 
+    Uses both sequence alignment and structural superposition to find the best
+    matching between predicted and experimental chains. This handles complex cases:
+    - Multi-chain structures
+    - Different chain orderings
+    - Partial overlaps
+    
+    The function uses a two-pass approach:
+    1. Sequence alignment to find similar chains
+    2. Structural alignment (RMSD) to confirm and rank matches
+    
+    Parameters
+    ----------
+    pred_dir : str
+        Directory containing predicted PDB files
+    exp_path : str
+        Path to experimental PDB file
+        
     Returns
     -------
     mapping : dict
-        `{"<pred_file>:<pred_chain>": (best_exp_chain, details)} where
-        *details* contains::
-
-            {
-                "rmsd": best_rmsd,
-                "pairs": list_of_all_tested_pairs,
-                "source": absolute_pred_pdb_path,
-                "pred_chain": chain_id_in_pred,
-            }
+        Dictionary mapping "<pred_file>:<pred_chain>" to (best_exp_chain, details)
+        where details contains:
+        - rmsd: Best RMSD value
+        - pairs: List of all tested chain pairs
+        - source: Absolute path to predicted PDB
+        - pred_chain: Chain ID in predicted structure
     """
-    # ------ Using both Biopython's sequence alignment and structural alignment
+    # Use both Biopython's sequence alignment and structural alignment
     parser = PDBParser(QUIET=True)
     pp_builder = PPBuilder()  # For extracting sequences
 
-    # Pre‑extract CA coordinates and sequences for experimental chains (cost amortised)
+    # Pre-extract CA coordinates and sequences for experimental chains
+    # This amortizes the cost across all predicted chains
     exp_struct = parser.get_structure("exp", exp_path)
     exp_chains = {}
     exp_sequences = {}
 
     for ch in exp_struct.get_chains():
-        # Extract CA coordinates
+        # Extract CA coordinates for structural alignment
         exp_chains[ch.id] = {res.id[1]: res["CA"].get_coord() for res in ch if res.id[0] == " " and "CA" in res}
-        # Extract sequence
+        # Extract amino acid sequence for sequence alignment
         seq = "".join(str(pp.get_sequence()) for pp in pp_builder.build_peptides(ch))
         if seq:  # Only store if sequence is not empty
             exp_sequences[ch.id] = seq
 
     results: Dict[str, Tuple[str, Dict]] = {}
-    # Track used experimental chains to potentially handle multimers better
+    # Track used experimental chains to avoid duplicate assignments in multimers
     used_exp_chains = set()
 
     for pred_path in glob.glob(os.path.join(pred_dir, "*.pdb")):
         pred_name = os.path.basename(pred_path)
         pred_struct = parser.get_structure(pred_name, pred_path)
 
-        # Iterate over *all* chains in the predicted structure
+        # Iterate over all chains in the predicted structure
         for p_chain in pred_struct.get_chains():
-            # Extract CA coordinates
+            # Extract CA coordinates for this predicted chain
             p_ca = {res.id[1]: res["CA"].get_coord() for res in p_chain if res.id[0] == " " and "CA" in res}
             
             # Get sequence for this predicted chain
@@ -173,20 +219,20 @@ def _find_best_chain_pair(pred_dir: str, exp_path: str) -> Dict[str, Tuple[str, 
             best_score = float("-inf")
             pairs = []
 
-            # First pass: try sequence alignment to find best matching chain
+            # First pass: use sequence alignment to find the best matching chain
             for exp_id, exp_seq in exp_sequences.items():
                 if exp_id in used_exp_chains:
-                    continue  # Skip already used chains for better multimer handling
+                    continue  # Skip already assigned chains for better multimer handling
                     
                 # Perform sequence alignment
                 alignment = pairwise2.align.globalxx(pred_seq, exp_seq, one_alignment_only=True)
                 score = alignment[0].score if alignment else 0
                 
-                # Store best sequence match
+                # Track best sequence match
                 if score > best_score:
                     best_score = score
                     
-                    # Now calculate RMSD if we have common residues
+                    # Calculate RMSD for chains with common residues
                     if exp_id in exp_chains and p_ca:
                         shared = sorted(p_ca.keys() & exp_chains[exp_id].keys())
                         if shared:
@@ -205,7 +251,7 @@ def _find_best_chain_pair(pred_dir: str, exp_path: str) -> Dict[str, Tuple[str, 
                                 best_rmsd = rmsd_val
                                 best_exp_chain = exp_id
 
-            # Second pass: if sequence alignment didn't yield good results, try structural alignment only
+            # Second pass: if sequence alignment didn't work, try pure structural alignment
             if best_exp_chain is None:
                 for exp_id, exp_ca in exp_chains.items():
                     if exp_id in used_exp_chains:
@@ -230,16 +276,16 @@ def _find_best_chain_pair(pred_dir: str, exp_path: str) -> Dict[str, Tuple[str, 
                         best_exp_chain = exp_id
 
             if best_exp_chain is not None:
-                # Mark this experimental chain as used to prevent duplicates
+                # Mark this experimental chain as assigned to prevent duplicate usage
                 used_exp_chains.add(best_exp_chain)
                 
-                key = f"{pred_name}:{p_chain.id}"  # unique key
+                key = f"{pred_name}:{p_chain.id}"  # Unique identifier for this chain pair
                 results[key] = (
                     best_exp_chain,
                     {
                         "rmsd": best_rmsd,
                         "pairs": pairs,
-                        "source": pred_path,   # absolute path for later use
+                        "source": pred_path,      # Absolute path for later use
                         "pred_chain": p_chain.id,
                     },
                 )
@@ -249,10 +295,27 @@ def _find_best_chain_pair(pred_dir: str, exp_path: str) -> Dict[str, Tuple[str, 
 # ---------------------------------------------------------------------------
 # Strict PDB reorder utility 
 # ---------------------------------------------------------------------------
+
 def reorder_residues_in_pdb(pdb_input: str, pdb_output: str) -> None:
     """
-    Fully reorder a PDB file by chain, residue number, and atom name.
-    Renumber atoms, insert TER between chains, and ensure residue order is correct.
+    Reorder and renumber atoms in a PDB file for consistency.
+    
+    Ensures proper ordering of atoms by:
+    1. Grouping atoms by chain and residue
+    2. Sorting by chain ID, residue number, and insertion code
+    3. Renumbering atoms sequentially
+    4. Inserting TER records between chains
+    5. Adding proper END record
+    
+    This normalization is important for downstream processing and
+    ensures compatibility with various structure analysis tools.
+    
+    Parameters
+    ----------
+    pdb_input : str
+        Path to input PDB file
+    pdb_output : str
+        Path to output reordered PDB file
     """
     from collections import defaultdict
 

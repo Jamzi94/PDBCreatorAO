@@ -1,3 +1,20 @@
+"""
+pipeline.py
+
+Main orchestrator for the protein structure analysis pipeline.
+
+This pipeline automates the entire workflow for protein structure analysis:
+1. Fetch protein metadata from UniProt
+2. Download experimental structures (PDB/OPM) and predicted structures (AlphaFold)
+3. Analyze structural integrity (gaps, low-confidence regions)
+4. Align and patch predicted structures onto experimental ones
+5. Orient structures using DUM-containing references
+6. Generate comprehensive Excel reports with clickable hyperlinks
+
+The pipeline handles both single-chain proteins and multi-chain complexes,
+including homo- and hetero-oligomers.
+"""
+
 import os, sys, argparse, logging
 import pandas as pd
 from openpyxl import load_workbook
@@ -16,9 +33,21 @@ from oriented import align_structures_by_groups
 from pathlib import Path
 
 
-# --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------
 
 def setup_logging(logfile: str, verbose: bool):
+    """
+    Configure logging for the pipeline.
+    
+    Sets up logging to both file and console with appropriate formatting.
+    
+    Parameters
+    ----------
+    logfile : str
+        Path to the log file
+    verbose : bool
+        If True, sets logging level to DEBUG; otherwise INFO
+    """
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
@@ -27,15 +56,56 @@ def setup_logging(logfile: str, verbose: bool):
                   logging.StreamHandler(sys.stdout)]
     )
 
-# --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------
 
 def style_link(cell, link_font):
+    """
+    Apply hyperlink styling to an Excel cell.
+    
+    Identifies cells containing HYPERLINK formulas and applies the standard
+    blue underlined font style.
+    
+    Parameters
+    ----------
+    cell : openpyxl.cell.Cell
+        Excel cell to style
+    link_font : openpyxl.styles.Font
+        Font style to apply to hyperlinks
+    """
     if cell.value and str(cell.value).startswith("=HYPERLINK"):
         cell.font = link_font
 
-# --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------
+
 def _add_af_gap_row(ws, upid, gene, prot, pdb_id,
                     start, end, ss_map, link_font):
+    """
+    Add a gap entry row to the Structural_Integrity worksheet.
+    
+    Creates a formatted row for AlphaFold gaps with hyperlinks and
+    secondary structure annotation.
+    
+    Parameters
+    ----------
+    ws : openpyxl.worksheet.Worksheet
+        Excel worksheet to add the row to
+    upid : str
+        UniProt ID
+    gene : str
+        Gene name
+    prot : str
+        Protein name
+    pdb_id : str
+        PDB/AlphaFold entry ID
+    start : int
+        Gap start residue
+    end : int
+        Gap end residue
+    ss_map : dict
+        Mapping of residue numbers to secondary structure
+    link_font : openpyxl.styles.Font
+        Font style for hyperlinks
+    """
     ws.append([
         f'=HYPERLINK("https://www.uniprot.org/uniprotkb/{upid}/entry","{upid}")',
         gene, prot,
@@ -46,8 +116,27 @@ def _add_af_gap_row(ws, upid, gene, prot, pdb_id,
     for col in (1, 3):
         style_link(ws.cell(ws.max_row, col), link_font)
 
-# --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------
+
 def create_excel_sheets(path: str):
+    """
+    Create the initial Excel workbook with all required sheets.
+    
+    Initializes a new Excel file with properly formatted sheets:
+    - UniProt Results: Protein metadata and cross-references
+    - PDB_Details: Detailed structure information
+    - Structural_Integrity: Gap and quality analysis
+    
+    Parameters
+    ----------
+    path : str
+        Path where the Excel file should be created
+        
+    Returns
+    -------
+    tuple
+        (workbook, UniProt_sheet, PDB_Details_sheet, Structural_Integrity_sheet)
+    """
     wb = Workbook()
     ws1 = wb.active; ws1.title = "UniProt Results"
     ws1.append([
@@ -76,8 +165,31 @@ def create_excel_sheets(path: str):
     wb.save(path)
     return wb, ws1, ws2, ws3
 
-# --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------
+
 def main():
+    """
+    Main entry point for the protein structure analysis pipeline.
+    
+    Orchestrates the complete workflow:
+    1. Parse command-line arguments
+    2. Read UniProt IDs from input file or command line
+    3. Fetch protein metadata from UniProt
+    4. Download experimental and predicted structures
+    5. Analyze structural integrity
+    6. Perform alignment and gap patching
+    7. Orient structures using DUM references
+    8. Generate comprehensive Excel reports
+    
+    The pipeline creates several output directories:
+    - pdb_structures_exp: Experimental PDB files
+    - pdb_structures_pred: AlphaFold predicted structures
+    - pdb_structures_af_aligned: Aligned and patched structures
+    - pdb_structures_oriented: Oriented structures (DUM-aligned)
+    
+    Results are saved to an Excel file with multiple sheets containing
+    clickable hyperlinks to external databases.
+    """
     ap = argparse.ArgumentParser("Protein structure pipeline")
     ap.add_argument("--base", default=os.getcwd())
     ap.add_argument("--input", default="uniprot_template.xlsx")
@@ -100,7 +212,7 @@ def main():
     log = logging.getLogger(__name__)
     log.info("Starting pipeline")
 
-    # ---------- read UniProt IDs ------------------------------------------
+    # Read UniProt IDs from command line or input Excel file
     if args.ids:
         uniprot_ids = [uid.strip() for uid in args.ids]
     else:
@@ -116,11 +228,11 @@ def main():
     wb_out, ws_uni, ws_det, ws_struct = create_excel_sheets(output_xlsx)
     link_font = Font(color="0000FF", underline="single")
 
-    # prot_len map per folder "Gene_UPID"
+    # Map protein lengths and interaction partners by gene/UniProt folder name
     prot_len_map = {}
     partner_ids_map = {}
 
-    # ---------- UniProt & experimental PDB part ---------------------------
+    # Process each UniProt ID: fetch metadata and download structures
     for upid in uniprot_ids:
         if not upid:
             continue
@@ -142,7 +254,7 @@ def main():
         pred_id = get_alphafold_pdb_info(upid)
         pred_ids = [pred_id] if pred_id else []
 
-        # --- write UniProt sheet ------------------------------------------
+        # Populate UniProt Results sheet with protein metadata
         ws_uni.append([
             f'=HYPERLINK("https://www.uniprot.org/uniprotkb/{upid}/entry","{upid}")',
             f'=HYPERLINK("https://www.genecards.org/cgi-bin/carddisp.pl?gene={gene}", "{gene}")',
@@ -154,7 +266,7 @@ def main():
         for col in (1, 2):
             style_link(ws_uni.cell(ws_uni.max_row, col), link_font)
 
-        # --- download experimental PDBs, fill Structural_Integrity --------
+        # Download experimental PDB files and analyze structural integrity
         for pdb_id in exp_ids:
             out_dir = os.path.join(EXP_DIR, f"{gene}_{upid}")
             pdb_path = download_pdb_structure(
@@ -178,7 +290,7 @@ def main():
                 for c in (1, 4):
                     style_link(ws_struct.cell(ws_struct.max_row, c), link_font)
 
-        # --- download AlphaFold PDB ---------------------------------------
+        # Download AlphaFold predicted structure
         if pred_ids:
             pred_dir = os.path.join(PRED_DIR, f"{gene}_{upid}")
             os.makedirs(pred_dir, exist_ok=True)
@@ -213,7 +325,7 @@ def main():
                         os.path.join(pred_dir, f"{gene}_{partner_id}_{partner_pred_id}.pdb")
                     )
 
-        # --- write PDB_Details (experimental) ----------------------------
+        # Populate PDB_Details sheet with experimental structure metadata
         for pdb_id in exp_ids:
             det = get_pdb_details(pdb_id)
             pdb_file = os.path.join(EXP_DIR, f"{gene}_{upid}",
@@ -234,7 +346,7 @@ def main():
             for col in (1, 4, 14):
                 style_link(ws_det.cell(ws_det.max_row, col), link_font)
 
-        # --- PDB details for AlphaFold -----------------------------------
+        # Add PDB_Details entry for AlphaFold prediction
         if pred_ids:
             pred_det = get_alphafold_details(upid, prot)
             ws_det.append([
@@ -250,7 +362,7 @@ def main():
 
     wb_out.save(output_xlsx)
 
-    # ---------- Alignment & patching -------------------------------------
+    # Perform structure alignment and gap patching
     summary = []
     for gene_dir in os.listdir(PRED_DIR):
         af_dir = os.path.join(PRED_DIR, gene_dir)
@@ -283,6 +395,7 @@ def main():
             )
             summary.append(res)
 
+    # Save alignment summary to Excel with appropriate formatting
     if summary:
         df = pd.DataFrame(summary)
         wb = load_workbook(output_xlsx)
@@ -307,7 +420,7 @@ def main():
             style_link(ws.cell(row_idx, col_pdb), link_font)
             wb.save(output_xlsx)
 
-    # ---------- Multi-reference orientation (align_and_patch) ---------------
+    # Perform multi-reference structural orientation using DUM ligands
     log.info("Running multi-reference alignment and orientation")
     try:
         align_structures_by_groups(
