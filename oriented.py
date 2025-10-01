@@ -2,6 +2,27 @@
 # ---------------------------------------------------------------------------
 # Multi-reference alignment module for PDB structures
 # ---------------------------------------------------------------------------
+"""
+oriented.py
+
+Multi-reference structural orientation using DUM markers.
+
+This module performs systematic orientation of protein structures using
+DUM (dummy atom) ligands as spatial references. DUM atoms are artificial
+markers placed in membrane protein structures to indicate membrane orientation.
+
+Key features:
+- Groups structures by gene name or UniProt ID
+- Identifies DUM-containing structures as orientation references
+- Aligns all structures in a group to their common DUM reference
+- Handles cases where no DUM reference exists
+- Tracks RMSD before and after alignment
+- Saves results to Excel for quality control
+
+The orientation process ensures that all structures of the same protein
+share a common spatial reference frame, which is essential for comparative
+analysis and visualization.
+"""
 
 import logging
 import re
@@ -16,7 +37,10 @@ import openpyxl
 from Bio.PDB import PDBParser, Superimposer, PDBIO
 
 # --- Constants & regular expressions ---
+# Regular expression to detect DUM (dummy atom) markers in small molecule lists
 DUM_RE = re.compile(r"\bDUM\b", re.IGNORECASE)
+# Regular expression to extract PDB IDs from Excel HYPERLINK formulas
+# Regular expression to extract PDB IDs from Excel HYPERLINK formulas
 HYP_RE = re.compile(
     r'=?HYPERLINK\(\s*"[^"]*"\s*[;,]\s*"(?P<id>[A-Za-z0-9\-]+)"\s*\)',
     re.IGNORECASE
@@ -31,7 +55,12 @@ logger = logging.getLogger(__name__)
 
 def extract_pdb_from_cell(cell) -> str:
     """
-    Extract PDB identifier from an Excel cell, whether as hyperlink or text.
+    Extract PDB identifier from an Excel cell containing hyperlink or plain text.
+    
+    Handles multiple cell formats:
+    - Excel hyperlink objects
+    - HYPERLINK formula strings
+    - Plain text PDB IDs
     
     Parameters
     ----------
@@ -41,7 +70,7 @@ def extract_pdb_from_cell(cell) -> str:
     Returns
     -------
     str
-        Extracted PDB identifier, or None if the cell is empty
+        Extracted PDB identifier in uppercase, or None if cell is empty
     """
     if cell.hyperlink and cell.hyperlink.target:
         return Path(cell.hyperlink.target).stem.upper()
@@ -54,7 +83,10 @@ def extract_pdb_from_cell(cell) -> str:
 
 def load_sheet(excel_file: Path, name: str) -> pd.DataFrame:
     """
-    Load a specific sheet from an Excel file and convert it to DataFrame.
+    Load a specific sheet from an Excel workbook and convert to DataFrame.
+    
+    Reads an Excel sheet, extracts PDB IDs from hyperlinks, and converts
+    the data to a pandas DataFrame with normalized column names.
     
     Parameters
     ----------
@@ -66,7 +98,8 @@ def load_sheet(excel_file: Path, name: str) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        DataFrame containing the sheet data
+        DataFrame containing the sheet data with normalized column names
+        (lowercase, spaces replaced with underscores)
         
     Raises
     ------
@@ -93,7 +126,10 @@ def load_sheet(excel_file: Path, name: str) -> pd.DataFrame:
 
 def filter_and_cascade(df_det: pd.DataFrame, df_ali: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Filter structures and cascade filtering to alignment data.
+    Filter structures and propagate filtering to alignment data.
+    
+    Ensures consistency between PDB_Details and Alignment_Summary sheets
+    by keeping only structures that appear in both datasets.
     
     Parameters
     ----------
@@ -105,7 +141,7 @@ def filter_and_cascade(df_det: pd.DataFrame, df_ali: pd.DataFrame) -> tuple[pd.D
     Returns
     -------
     tuple[pd.DataFrame, pd.DataFrame]
-        Tuple containing filtered DataFrames (details, alignment)
+        Filtered DataFrames (details, alignment) with matching structure sets
     """
     # Cascade to Alignment_Summary
     valid = set(df_det['pdb_id'].dropna().str.upper())
@@ -118,21 +154,27 @@ def superimpose_structures(ref_path: Path,
                            df_targets: pd.DataFrame,
                            out_root: Path) -> list[tuple[str, str, float, float]]:
     """
-    Superimpose target structures onto a reference structure.
+    Superimpose target structures onto a reference structure using CA atoms.
+    
+    Performs rigid-body superposition of multiple structures onto a common
+    reference, typically one containing DUM orientation markers. Uses CA
+    (alpha-carbon) atoms for alignment.
     
     Parameters
     ----------
     ref_path : Path
         Path to the reference structure
     df_targets : pd.DataFrame
-        DataFrame containing information about target structures
+        DataFrame containing information about target structures to align
+        Must include columns: pdb_id, gene_name, uniprot_id, patched_pdb
     out_root : Path
-        Root directory for aligned structures
+        Root directory where oriented structures will be saved
         
     Returns
     -------
     list[tuple[str, str, float, float]]
-        List of tuples (pdb_id, aligned_path, rmsd_before, rmsd_after)
+        List of alignment results: (pdb_id, aligned_path, rmsd_before, rmsd_after)
+        RMSD values are in Angstroms
     """
     parser = PDBParser(QUIET=True)
     ref_struct = parser.get_structure('ref', str(ref_path))
@@ -171,24 +213,28 @@ def superimpose_structures(ref_path: Path,
 
 
 # ---------------------------------------------------------------------------
-# New functions for multi-reference alignment
+# Functions for multi-reference alignment workflow
 # ---------------------------------------------------------------------------
 
 def group_structures_by_attribute(df_det: pd.DataFrame, attribute: str) -> Dict[str, List[str]]:
     """
-    Group PDB structures by specified attribute (gene_name or uniprot_id).
+    Group PDB structures by a specified attribute for batch processing.
+    
+    Creates groups of related structures (e.g., all structures for the same
+    gene or protein) to enable group-wise orientation to a common reference.
     
     Parameters
     ----------
     df_det : pd.DataFrame
         DataFrame containing PDB structure details
     attribute : str
-        Attribute for grouping ('gene_name' or 'uniprot_id')
+        Column name to group by ('gene_name' or 'uniprot_id')
         
     Returns
     -------
     Dict[str, List[str]]
-        Dictionary {attribute_value: [list_of_pdb_ids]}
+        Dictionary mapping attribute values to lists of PDB IDs
+        Example: {'ABCB1': ['6C0V', '6QEX', '7A69'], 'ABCB4': ['3G9P']}
     """
     if attribute not in df_det.columns:
         logger.error(f"Attribute '{attribute}' not found in DataFrame")
@@ -208,19 +254,25 @@ def group_structures_by_attribute(df_det: pd.DataFrame, attribute: str) -> Dict[
 
 def find_dum_references(df_det: pd.DataFrame, groups: Dict[str, List[str]]) -> Dict[str, str]:
     """
-    Find a reference containing DUM for each group.
+    Identify DUM-containing structures to use as orientation references.
+    
+    For each group of structures, searches for structures containing DUM
+    (dummy atom) markers. DUM atoms are artificial markers indicating membrane
+    orientation in membrane protein structures. The first DUM-containing
+    structure in each group is designated as the orientation reference.
     
     Parameters
     ----------
     df_det : pd.DataFrame
-        DataFrame containing PDB structure details
+        DataFrame containing PDB structure details with 'small_molecules' column
     groups : Dict[str, List[str]]
-        Dictionary of structure groups
+        Dictionary of structure groups from group_structures_by_attribute
         
     Returns
     -------
     Dict[str, str]
-        Dictionary {group: reference_pdb_id}
+        Dictionary mapping group names to reference PDB IDs
+        Only groups with DUM-containing structures are included
     """
     references = {}
     
@@ -253,21 +305,41 @@ def align_structures_by_groups(excel_file: Path,
                               group_by: str = 'gene_name',
                               out_root: Optional[Path] = None) -> Dict[str, List[tuple]]:
     """
-    Align PDB structures by groups, using a DUM reference for each group.
+    Perform multi-reference structural alignment grouped by gene or protein.
+    
+    This is the main orchestrator function that:
+    1. Loads structure and alignment data from Excel
+    2. Groups structures by the specified attribute
+    3. Identifies DUM-containing references for each group
+    4. Aligns all structures in each group to their reference
+    5. Saves oriented structures and RMSD metrics
+    
+    This approach ensures that all structures of the same protein share a
+    common spatial orientation, which is critical for:
+    - Comparative structural analysis
+    - Visualization of conformational changes
+    - Identification of conserved binding sites
+    - Analysis of membrane protein orientation
     
     Parameters
     ----------
     excel_file : Path
-        Path to the Excel file containing the data
+        Path to the Excel file containing PDB_Details and Alignment_Summary sheets
     group_by : str, optional
-        Attribute for grouping ('gene_name' or 'uniprot_id'), default 'gene_name'
+        Attribute for grouping: 'gene_name' (default) or 'uniprot_id'
     out_root : Path, optional
-        Root directory for aligned structures, default 'pdb_structures_oriented'
+        Root directory for oriented structures (default: 'pdb_structures_oriented')
         
     Returns
     -------
     Dict[str, List[tuple]]
-        Dictionary {group: [(pdb_id, aligned_path, rmsd_before, rmsd_after)]}
+        Results dictionary: {group: [(pdb_id, aligned_path, rmsd_before, rmsd_after)]}
+        
+    Notes
+    -----
+    - Structures without a DUM reference are not oriented
+    - The reference structure itself is copied (not re-aligned)
+    - Results are saved to a new 'Alignment_RMSD_MultiRef' sheet in the Excel file
     """
     if out_root is None:
         out_root = Path('pdb_structures_oriented')
@@ -299,11 +371,11 @@ def align_structures_by_groups(excel_file: Path,
     all_results = {}
     all_aligned_results = []
     
-    # For each group with a reference
+    # Process each group that has a DUM-containing reference
     for group, ref_id in references.items():
         logger.info(f"Processing group {group} with reference {ref_id}")
         
-        # Get the reference path
+        # Locate the reference structure path
         ref_row = df_ali_all[df_ali_all['pdb_id'] == ref_id]
         if ref_row.empty:
             logger.warning(f"Reference {ref_id} not found in Alignment_Summary, skipping group {group}")
@@ -314,11 +386,11 @@ def align_structures_by_groups(excel_file: Path,
             logger.error(f"Reference file not found: {ref_path}, skipping group {group}")
             continue
         
-        # Filter group structures (except reference)
+        # Identify target structures (all structures except the reference)
         group_pdb_ids = groups[group]
         target_pdb_ids = [pid for pid in group_pdb_ids if pid != ref_id]
         
-        # Prepare target DataFrame
+        # Prepare DataFrame of target structures with necessary metadata
         df_targets = pd.merge(
             df_ali_all[df_ali_all['pdb_id'].isin(target_pdb_ids)],
             df_det_all[['pdb_id', 'gene_name', 'uniprot_id']],
@@ -329,10 +401,10 @@ def align_structures_by_groups(excel_file: Path,
             logger.warning(f"No target structures found for group {group}")
             continue
         
-        # Align structures to reference
+        # Perform structural superposition for all targets
         results = superimpose_structures(ref_path, df_targets, out_root)
         
-        # Copy reference (already oriented)
+        # Copy the reference structure to the output directory (already oriented)
         ref_det_row = df_det_all[df_det_all['pdb_id'] == ref_id].iloc[0]
         gene = ref_det_row['gene_name']
         uniprot = ref_det_row['uniprot_id']
@@ -343,14 +415,14 @@ def align_structures_by_groups(excel_file: Path,
         shutil.copy(str(ref_path), str(out_path))
         logger.info(f"Copied reference {ref_id} -> {out_path}")
         
-        # Add reference to results
+        # Add reference to results (no RMSD since it wasn't aligned)
         results.append((ref_id, str(out_path), None, None))
         
-        # Store results for this group
+        # Store results for this group and accumulate for Excel output
         all_results[group] = results
         all_aligned_results.extend(results)
     
-    # Save all results to Excel
+    # Save consolidated results to Excel
     df_res = pd.DataFrame(all_aligned_results, columns=['pdb_id', 'aligned_path', 'rmsd_before', 'rmsd_after'])
     with pd.ExcelWriter(excel_file, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
         df_res.to_excel(writer, sheet_name='Alignment_RMSD_MultiRef', index=False)
