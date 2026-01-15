@@ -5,11 +5,12 @@
 """
 oriented.py
 
-Multi-reference structural orientation using DUM markers.
+Multi-reference structural orientation using DUM markers and OPM database.
 
-This module performs systematic orientation of protein structures using
-DUM (dummy atom) ligands as spatial references. DUM atoms are artificial
-markers placed in membrane protein structures to indicate membrane orientation.
+v2 Features:
+- Dynamic OPM availability checking
+- ADME family classification by gene prefix
+- Cross-platform file path handling (Windows/Linux/macOS)
 
 Key features:
 - Groups structures by gene name or UniProt ID
@@ -28,9 +29,12 @@ import logging
 import re
 import sys
 import shutil
+import time
+import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Set, Any
 
+import requests
 import numpy as np
 import pandas as pd
 import openpyxl
@@ -40,11 +44,25 @@ from Bio.PDB import PDBParser, Superimposer, PDBIO
 # Regular expression to detect DUM (dummy atom) markers in small molecule lists
 DUM_RE = re.compile(r"\bDUM\b", re.IGNORECASE)
 # Regular expression to extract PDB IDs from Excel HYPERLINK formulas
-# Regular expression to extract PDB IDs from Excel HYPERLINK formulas
 HYP_RE = re.compile(
     r'=?HYPERLINK\(\s*"[^"]*"\s*[;,]\s*"(?P<id>[A-Za-z0-9\-]+)"\s*\)',
     re.IGNORECASE
 )
+
+# --- v2: API URLs ---
+OPM_DOWNLOAD_URL = "https://biomembhub.org/shared/opm-assets/pdb/{pdb_id}.pdb"
+RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
+
+# --- v2: ADME Family Gene Prefixes ---
+ADME_GENE_PREFIXES = {
+    "ABC_efflux": ["ABCB", "ABCG", "ABCC", "MDR", "MRP", "BCRP"],
+    "SLC22": ["SLC22", "OCT", "OAT"],
+    "SLCO_OATP": ["SLCO", "OATP"],
+    "SLC15_POT": ["SLC15", "PEPT"],
+    "SLC47_MATE": ["SLC47", "MATE"],
+    "SLC10": ["SLC10", "NTCP", "ASBT"],
+    "SLC29_ENT": ["SLC29", "ENT"],
+}
 
 # --- Logging configuration ---
 logger = logging.getLogger(__name__)
@@ -106,6 +124,9 @@ def load_sheet(excel_file: Path, name: str) -> pd.DataFrame:
     SystemExit
         If the Excel file or sheet does not exist
     """
+    # Columns that contain file paths - preserve original case for cross-platform compatibility
+    PATH_COLUMNS = {'patched_pdb', 'aligned_pdb', 'pdb_path', 'path'}
+    
     if not excel_file.is_file():
         logger.error(f"Missing Excel file: {excel_file}")
         sys.exit(1)
@@ -117,7 +138,14 @@ def load_sheet(excel_file: Path, name: str) -> pd.DataFrame:
     headers = [str(c.value).strip().lower().replace(" ", "_") for c in ws[1]]
     rows = []
     for row in ws.iter_rows(min_row=2):
-        rec = {h: extract_pdb_from_cell(c) for h, c in zip(headers, row)}
+        rec = {}
+        for h, c in zip(headers, row):
+            if h in PATH_COLUMNS:
+                # Preserve original case for file paths (cross-platform compatibility)
+                val = c.value
+                rec[h] = str(val).strip() if val is not None else None
+            else:
+                rec[h] = extract_pdb_from_cell(c)
         rows.append(rec)
     df = pd.DataFrame(rows)
     logger.info(f"[{name}] loaded: {df.shape[0]} rows")
@@ -427,6 +455,300 @@ def align_structures_by_groups(excel_file: Path,
     with pd.ExcelWriter(excel_file, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
         df_res.to_excel(writer, sheet_name='Alignment_RMSD_MultiRef', index=False)
     logger.info(f"Results saved in 'Alignment_RMSD_MultiRef' in {excel_file}")
+    
+    return all_results
+
+
+# ---------------------------------------------------------------------------
+# v2: Dynamic OPM/RCSB API functions
+# ---------------------------------------------------------------------------
+
+def check_opm_availability(pdb_id: str) -> Dict[str, Any]:
+    """
+    Check if an OPM-oriented structure is available for a PDB ID.
+    
+    Parameters
+    ----------
+    pdb_id : str
+        PDB identifier (4 characters)
+        
+    Returns
+    -------
+    dict
+        {"available": bool, "url": str|None}
+    """
+    pdb_id = pdb_id.lower().strip()
+    opm_url = OPM_DOWNLOAD_URL.format(pdb_id=pdb_id)
+    
+    try:
+        resp = requests.head(opm_url, timeout=10)
+        if resp.ok:
+            return {"available": True, "url": opm_url}
+    except requests.RequestException:
+        pass
+    
+    return {"available": False, "url": None}
+
+
+def classify_adme_family(gene: str) -> str:
+    """
+    Classify a gene into an ADME transporter family by prefix matching.
+    
+    Parameters
+    ----------
+    gene : str
+        Gene name
+        
+    Returns
+    -------
+    str
+        ADME family name or "Other"
+    """
+    if not gene:
+        return "Other"
+    
+    gene_upper = gene.upper().split("-")[0].strip()
+    
+    for family, prefixes in ADME_GENE_PREFIXES.items():
+        for prefix in prefixes:
+            if gene_upper.startswith(prefix.upper()):
+                return family
+    
+    return "Other"
+
+
+def search_pdb_by_uniprot(uniprot_id: str) -> List[str]:
+    """
+    Search RCSB PDB for all structures linked to a UniProt accession.
+    
+    Parameters
+    ----------
+    uniprot_id : str
+        UniProt accession number
+        
+    Returns
+    -------
+    list
+        List of PDB IDs (uppercase)
+    """
+    query = {
+        "query": {
+            "type": "terminal",
+            "service": "text",
+            "parameters": {
+                "attribute": "rcsb_polymer_entity_container_identifiers.reference_sequence_identifiers.database_accession",
+                "operator": "exact_match",
+                "value": uniprot_id.upper()
+            }
+        },
+        "return_type": "entry",
+        "request_options": {"return_all_hits": True}
+    }
+    
+    try:
+        resp = requests.post(RCSB_SEARCH_URL, json=query, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return sorted(set([r['identifier'].upper() for r in data.get('result_set', [])]))
+    except requests.RequestException:
+        return []
+
+
+def build_opm_mapping(uniprot_ids: List[str], 
+                      pdb_ids_by_uniprot: Dict[str, List[str]],
+                      gene_by_uniprot: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Build dynamic OPM availability mapping for UniProt IDs.
+    
+    Parameters
+    ----------
+    uniprot_ids : list
+        List of UniProt accession numbers
+    pdb_ids_by_uniprot : dict
+        PDB IDs {upid: [pdb_ids]}
+    gene_by_uniprot : dict
+        Gene names {upid: gene}
+        
+    Returns
+    -------
+    dict
+        Mapping: {uniprot_id: {opm_pdbs, non_opm_pdbs, has_opm, family}}
+    """
+    mapping = {}
+    
+    for upid in uniprot_ids:
+        if not upid:
+            continue
+            
+        logger.info(f"Building OPM mapping for {upid}")
+        opm_pdbs = []
+        non_opm_pdbs = []
+        
+        known_pdbs = pdb_ids_by_uniprot.get(upid, [])
+        rcsb_pdbs = search_pdb_by_uniprot(upid)
+        all_pdbs = sorted(set([p.upper() for p in known_pdbs] + rcsb_pdbs))
+        
+        for pdb_id in all_pdbs:
+            opm_info = check_opm_availability(pdb_id)
+            if opm_info["available"]:
+                opm_pdbs.append(pdb_id)
+            else:
+                non_opm_pdbs.append(pdb_id)
+            time.sleep(0.2)  # Rate limiting
+        
+        gene = gene_by_uniprot.get(upid, "")
+        family = classify_adme_family(gene)
+        
+        mapping[upid] = {
+            "opm_pdbs": opm_pdbs,
+            "non_opm_pdbs": non_opm_pdbs,
+            "has_opm": len(opm_pdbs) > 0,
+            "family": family,
+            "gene": gene
+        }
+        
+        logger.info(f"  {upid}: {len(opm_pdbs)} OPM, {len(non_opm_pdbs)} non-OPM, family={family}")
+    
+    return mapping
+
+
+def align_structures_by_groups_v2(
+    excel_file: Path,
+    opm_mapping: Dict[str, Dict[str, Any]],
+    conformation_by_pdb: Dict[str, str],
+    group_by: str = 'gene_name',
+    out_root: Optional[Path] = None
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    v2: Multi-reference structural alignment with dynamic OPM integration.
+    
+    Organizes output by Family/Gene/Conformation/PDB_ID.
+    """
+    if out_root is None:
+        out_root = Path('pdb_structures_oriented_v2')
+    
+    df_det_all = load_sheet(excel_file, 'PDB_Details')
+    df_ali_all = load_sheet(excel_file, 'Alignment_Summary')
+    
+    groups = group_structures_by_attribute(df_det_all, group_by)
+    logger.info(f"v2: {len(groups)} groups found")
+    
+    all_results = {}
+    all_records = []
+    
+    parser = PDBParser(QUIET=True)
+    io = PDBIO()
+    sup = Superimposer()
+    
+    for group, pdb_ids in groups.items():
+        logger.info(f"v2: Processing group {group} ({len(pdb_ids)} structures)")
+        
+        group_rows = df_det_all[df_det_all[group_by] == group]
+        if group_rows.empty:
+            continue
+        
+        upid = group_rows.iloc[0].get('uniprot_id', "") if 'uniprot_id' in group_rows.columns else ""
+        
+        if upid and upid in opm_mapping:
+            family = opm_mapping[upid].get("family", "Other")
+        else:
+            family = classify_adme_family(group)
+        
+        # Find DUM reference
+        dum_refs = find_dum_references(df_det_all, {group: pdb_ids})
+        ref_id = dum_refs.get(group)
+        ref_path = None
+        
+        if ref_id:
+            ref_row = df_ali_all[df_ali_all['pdb_id'] == ref_id]
+            if not ref_row.empty:
+                ref_path_str = ref_row.iloc[0].get('patched_pdb')
+                if ref_path_str:
+                    ref_path = Path(ref_path_str)
+                    if not ref_path.is_file():
+                        logger.warning(f"Reference file not found: {ref_path}")
+                        ref_path = None
+        
+        group_results = []
+        
+        for pdb_id in pdb_ids:
+            det_row = df_det_all[df_det_all['pdb_id'] == pdb_id]
+            ali_row = df_ali_all[df_ali_all['pdb_id'] == pdb_id]
+            
+            if det_row.empty or ali_row.empty:
+                continue
+            
+            gene = det_row.iloc[0].get('gene_name', group)
+            patched_path_str = ali_row.iloc[0].get('patched_pdb')
+            
+            if not patched_path_str:
+                continue
+            
+            patched_path = Path(patched_path_str)
+            if not patched_path.is_file():
+                continue
+            
+            conformation = conformation_by_pdb.get(pdb_id, "unspecified")
+            if not conformation or conformation == "Not specified":
+                conformation = "unspecified"
+            conformation = conformation.replace(" ", "_").replace(",", "_").lower()
+            
+            # Create output directory
+            struct_dir = out_root / family / gene / conformation / pdb_id
+            struct_dir.mkdir(parents=True, exist_ok=True)
+            
+            oriented_path = struct_dir / f"oriented_{pdb_id}.pdb"
+            
+            result = {
+                "pdb_id": pdb_id, "gene": gene, "family": family,
+                "conformation": conformation, "status": "ok"
+            }
+            
+            if ref_path and ref_path.is_file() and pdb_id != ref_id:
+                try:
+                    ref_struct = parser.get_structure('ref', str(ref_path))
+                    tgt_struct = parser.get_structure(pdb_id, str(patched_path))
+                    
+                    ref_atoms = [a for a in ref_struct[0].get_atoms() if a.get_id() == 'CA']
+                    tgt_atoms = [a for a in tgt_struct[0].get_atoms() if a.get_id() == 'CA']
+                    
+                    n = min(len(ref_atoms), len(tgt_atoms))
+                    if n >= 10:
+                        sup.set_atoms(ref_atoms[:n], tgt_atoms[:n])
+                        sup.apply(tgt_struct.get_atoms())
+                        io.set_structure(tgt_struct)
+                        io.save(str(oriented_path))
+                        result["rmsd"] = round(float(sup.rms), 3)
+                        logger.info(f"  {pdb_id}: RMSD {sup.rms:.3f}A")
+                    else:
+                        shutil.copy(str(patched_path), str(oriented_path))
+                        result["status"] = "insufficient_atoms"
+                except Exception as e:
+                    shutil.copy(str(patched_path), str(oriented_path))
+                    result["status"] = f"error: {e}"
+            elif pdb_id == ref_id:
+                shutil.copy(str(patched_path), str(oriented_path))
+                result["status"] = "reference"
+            else:
+                shutil.copy(str(patched_path), str(oriented_path))
+                result["status"] = "no_reference"
+            
+            # Save metadata
+            shutil.copy(str(patched_path), struct_dir / f"patched_{pdb_id}.pdb")
+            with open(struct_dir / "metadata.json", "w") as f:
+                json.dump(result, f, indent=2)
+            
+            group_results.append(result)
+            all_records.append(result)
+        
+        all_results[group] = group_results
+    
+    # Save to Excel
+    if all_records:
+        df_v2 = pd.DataFrame(all_records)
+        with pd.ExcelWriter(excel_file, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+            df_v2.to_excel(writer, sheet_name='Orientation_v2', index=False)
+        logger.info(f"v2 results saved")
     
     return all_results
 
