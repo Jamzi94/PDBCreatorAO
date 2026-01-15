@@ -29,7 +29,13 @@ from structure_analysis import (detect_gaps_and_discard_coils,
                                 parse_small_molecules,
                                 parse_helix_sheet_annotations)
 from alignment import align_and_patch
-from oriented import align_structures_by_groups
+from oriented import (
+    align_structures_by_groups,
+    # v2 functions
+    align_structures_by_groups_v2,
+    build_opm_mapping,
+    classify_adme_family
+)
 from pathlib import Path
 
 
@@ -306,10 +312,10 @@ def main():
             else:
                 partner_ids = partners
 
-            log.info(f"▶ DEBUG: gene={gene!r}, upid={upid!r}, pred_id={pred_id!r}")
-            log.info(f"▶ DEBUG: raw partners={partners!r}")
-            log.info(f"▶ DEBUG: parsed partner_ids={partner_ids!r}")
-            log.info(f"▶ DEBUG: pred_dir={pred_dir!r}")
+            log.info(f"[DBG] gene={gene!r}, upid={upid!r}, pred_id={pred_id!r}")
+            log.info(f"[DBG] raw partners={partners!r}")
+            log.info(f"[DBG] parsed partner_ids={partner_ids!r}")
+            log.info(f"[DBG] pred_dir={pred_dir!r}")
 
             for partner_id in partner_ids:
                 if not partner_id:
@@ -420,20 +426,77 @@ def main():
             style_link(ws.cell(row_idx, col_pdb), link_font)
             wb.save(output_xlsx)
 
-    # Perform multi-reference structural orientation using DUM ligands
-    log.info("Running multi-reference alignment and orientation")
+    # Perform multi-reference structural orientation using DUM ligands (v1 legacy)
+    log.info("Running multi-reference alignment and orientation (v1 legacy)")
     try:
         align_structures_by_groups(
-            excel_file=Path(output_xlsx),  # <-- convert to Path
+            excel_file=Path(output_xlsx),
             group_by='gene_name',
             out_root=Path(os.path.join(BASE, "pdb_structures_oriented"))
         )
-        log.info("Multi-reference alignment completed")
+        log.info("Multi-reference alignment completed (v1)")
     except Exception as e:
         log.error(f"Multi-reference alignment failed: {e}")
 
+    # =========================================================================
+    # v2: Dynamic OPM orientation with hierarchical file organization
+    # =========================================================================
+    log.info("Running v2 orientation with dynamic OPM mapping")
+    
+    try:
+        # Build OPM mapping from data already collected (reuse existing data)
+        # pdb_ids_by_uniprot and gene_by_uniprot are built from previous processing
+        pdb_ids_by_uniprot = {}
+        gene_by_uniprot = {}
+        conformation_by_pdb = {}
+        
+        # Collect data from what we already processed (no new API calls for UniProt)
+        for upid in uniprot_ids:
+            if not upid:
+                continue
+            try:
+                up_json = fetch_uniprot_json(upid)  # Uses cache
+                info = parse_uniprot_data(up_json)
+                gene_by_uniprot[upid] = info.get('gene', '')
+                pdb_ids_by_uniprot[upid] = info.get('pdb_ids', [])
+                
+                # Get conformations for each PDB (reuse get_pdb_details)
+                for pdb_id in info.get('pdb_ids', []):
+                    try:
+                        det = get_pdb_details(pdb_id)
+                        conformation_by_pdb[pdb_id.upper()] = det.get('conformation', 'unspecified')
+                    except Exception:
+                        conformation_by_pdb[pdb_id.upper()] = 'unspecified'
+            except Exception as e:
+                log.warning(f"v2: Could not get data for {upid}: {e}")
+        
+        # Build dynamic OPM mapping (checks OPM/PDBTM availability)
+        log.info("Building OPM availability mapping...")
+        opm_mapping = build_opm_mapping(
+            uniprot_ids=uniprot_ids,
+            pdb_ids_by_uniprot=pdb_ids_by_uniprot,
+            gene_by_uniprot=gene_by_uniprot
+        )
+        
+        # Run v2 alignment with OPM mapping
+        v2_out_root = Path(os.path.join(BASE, "pdb_structures_oriented_v2"))
+        v2_results = align_structures_by_groups_v2(
+            excel_file=Path(output_xlsx),
+            opm_mapping=opm_mapping,
+            conformation_by_pdb=conformation_by_pdb,
+            group_by='gene_name',
+            out_root=v2_out_root
+        )
+        
+        log.info(f"v2 orientation completed: {len(v2_results)} groups processed")
+        
+    except Exception as e:
+        log.error(f"v2 orientation failed: {e}")
+        import traceback
+        log.debug(traceback.format_exc())
 
-        log.info("Pipeline completed")
+    log.info("Pipeline completed")
 
 if __name__ == "__main__":
     main()
+
