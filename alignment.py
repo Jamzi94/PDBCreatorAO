@@ -200,7 +200,7 @@ def _find_best_chain_pair(pred_dir: str, exp_path: str) -> Dict[str, Tuple[str, 
     # Track used experimental chains to avoid duplicate assignments in multimers
     used_exp_chains = set()
 
-    for pred_path in glob.glob(os.path.join(pred_dir, "*.pdb")):
+    for pred_path in sorted(glob.glob(os.path.join(pred_dir, "*.pdb"))):
         pred_name = os.path.basename(pred_path)
         pred_struct = parser.get_structure(pred_name, pred_path)
 
