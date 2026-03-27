@@ -111,7 +111,15 @@ Options:
   - **Alignment_RMSD:** RMSD values and orientation metrics for each aligned structure.
 
 All sheets have clickable hyperlinks (UniProt, RCSB, AlphaFold, PubMed…).
- 
+
+  
+---
+
+## Warning 
+
+All the patched structures need to be minimized in vacuum prior to their usage
+
+
 ---
 
 ## Notes
