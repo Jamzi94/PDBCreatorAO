@@ -129,6 +129,7 @@ All the patched structures need to be minimized in vacuum prior to their usage
 - The pipeline is robust for both single chains and multi-chain complexes, handling complicated chain correspondences and orientation requirements.
 - Each output directory is named systematically for downstream compatibility and traceability.
 - All steps are logged in `pipeline.log` for transparency and reproducibility.
+- **File processing is deterministic:** Files are sorted alphabetically to ensure consistent results across different systems and runs.
 
 ---
 
@@ -252,3 +253,4 @@ Toutes les feuilles incluent des liens hypertextes.
 - Compatible mono-chaîne et multi-chaînes, gestion complexe des correspondances.
 - Sorties nommées systématiquement pour la reproductibilité.
 - Pipeline documenté via `pipeline.log` à chaque étape.
+- **Traitement déterministe :** Les fichiers sont triés alphabétiquement pour garantir des résultats cohérents sur différents systèmes.

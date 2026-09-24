@@ -370,7 +370,7 @@ def main():
 
     # Perform structure alignment and gap patching
     summary = []
-    for gene_dir in os.listdir(PRED_DIR):
+    for gene_dir in sorted(os.listdir(PRED_DIR)):
         af_dir = os.path.join(PRED_DIR, gene_dir)
         if not os.path.isdir(af_dir):
             continue
@@ -385,7 +385,7 @@ def main():
         if not os.path.isdir(exp_dir):
             continue
         partner_ids = partner_ids_map.get(gene_dir, [])
-        for exp_file in os.listdir(exp_dir):
+        for exp_file in sorted(os.listdir(exp_dir)):
             if not exp_file.endswith(".pdb"):
                 continue
             exp_path = os.path.join(exp_dir, exp_file)
